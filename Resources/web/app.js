@@ -1429,7 +1429,7 @@ async function submit() {
     if (cmd === 'resume') { input.value = ''; toast('Pick any past session in the sidebar to resume it.'); return; }
     if (cmd === 'exit' || cmd === 'quit') { input.value = ''; native('end', { k: S.k }); return; }
     if (cmd === 'model' && sm[2]) { S.opts.model = sm[2].trim(); }
-    if (cmd === 'rename' && sm[2]) native('title', { k: S.k, title: sm[2].trim() });
+    if (cmd === 'rename' && sm[2]) { S.title = sm[2].trim(); native('title', { k: S.k, title: S.title }); }
   }
 
   const content = [];
@@ -1450,7 +1450,8 @@ async function submit() {
   S.scroll(true);
   const ok = await S.write(message);
   if (!ok) { setBusy(S, false); bubble.append(notice('Not sent: Claude Code is not available.', 'error')); }
-  if (S.title === 'New chat' && text && !isCmd) native('title', { k: S.k, title: text.slice(0, 60) });
+  // A placeholder until Claude names the chat; only once, so later messages don't replace that name.
+  if (S.title === 'New chat' && text && !isCmd) { S.title = text.slice(0, 60); native('title', { k: S.k, title: S.title }); }
   updateChrome();
 }
 
