@@ -1284,6 +1284,13 @@ function insertAtCursor(text) {
 }
 
 function droppedFiles(files) {
+  const dirs = files.filter((f) => f.dir);
+  if (dirs.length && (finder.open || !current)) {
+    dirs.forEach((f, i) => native('addProjectPath', { path: f.path, chat: i === dirs.length - 1 }));
+    finder.loadedAt = 0;
+    if (finder.open) closeFinder();
+    return;
+  }
   if (!current) return;
   for (const f of files) {
     if (f.data && f.mime) addImage(f.mime, f.data, f.name);
@@ -1694,6 +1701,218 @@ function revealEl(el) {
   el.animate([{ background: 'var(--accent-soft)' }, { background: 'transparent' }], { duration: 1200 });
 }
 
+// ---------------------------------------------------------------- project finder
+// A keyboard-first palette: Claude Code's recent projects, git repos, typed paths, Finder as a fallback.
+const finder = { open: false, cands: [], items: [], sel: 0, moved: false, dirs: new Map(), loadedAt: 0, hint: '' };
+const fInput = $('#finder-input');
+const FOLDER_ICO = '<svg viewBox="0 0 20 20" width="15" height="15"><path d="M2.5 5.5a1.5 1.5 0 0 1 1.5-1.5h3.6l1.6 1.8H16a1.5 1.5 0 0 1 1.5 1.5v7.2A1.5 1.5 0 0 1 16 16H4a1.5 1.5 0 0 1-1.5-1.5z" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linejoin="round"/></svg>';
+const PLUS_ICO = '<svg viewBox="0 0 20 20" width="15" height="15"><path d="M10 4.5v11M4.5 10h11" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"/></svg>';
+const DOTS_ICO = '<svg viewBox="0 0 20 20" width="15" height="15"><circle cx="5" cy="10" r="1.3" fill="currentColor"/><circle cx="10" cy="10" r="1.3" fill="currentColor"/><circle cx="15" cy="10" r="1.3" fill="currentColor"/></svg>';
+
+async function openFinder() {
+  closeMenu(); closePop();
+  finder.open = true;
+  $('#finder').hidden = false;
+  fInput.value = '';
+  finder.sel = 0; finder.moved = false;
+  finder.dirs.clear();
+  renderFinder();
+  setTimeout(() => fInput.focus(), 0);
+  if (!finder.cands.length || Date.now() - finder.loadedAt > 30000) {
+    const list = await native('projectCandidates');
+    if (Array.isArray(list)) { finder.cands = list; finder.loadedAt = Date.now(); if (finder.open) renderFinder(); }
+  }
+}
+function closeFinder() {
+  finder.open = false;
+  $('#finder').hidden = true;
+  if (current) input.focus();
+}
+
+function ago(ms) {
+  if (!ms) return '';
+  const s = (Date.now() - ms) / 1000;
+  if (s < 3600) return Math.max(1, Math.round(s / 60)) + 'm';
+  if (s < 86400) return Math.round(s / 3600) + 'h';
+  if (s < 86400 * 30) return Math.round(s / 86400) + 'd';
+  return new Date(ms).toLocaleDateString(undefined, { month: 'short', day: 'numeric' });
+}
+function frecency(c) {
+  let s = c.source === 'claude' ? 4 : 0;
+  if (c.last) s += 20 * Math.pow(0.5, (Date.now() - c.last) / 864e5 / 7);
+  if (c.uses) s += 3 * Math.log2(1 + c.uses);
+  if (c.branch) s += 2;
+  return s;
+}
+/** fzf-style subsequence match. Returns { score, pos } or null. */
+function fuzzy(s, q) {
+  if (!q) return { score: 0, pos: [] };
+  const sl = s.toLowerCase(), ql = q.toLowerCase();
+  const at = sl.indexOf(ql);
+  if (at >= 0) {
+    const boundary = at === 0 || /[\/\-_. ]/.test(s[at - 1]);
+    return { score: 60 + (boundary ? 30 : 0) + (sl === ql ? 60 : 0) - at - s.length * 0.2, pos: [...ql].map((_, i) => at + i) };
+  }
+  let i = 0, score = 0, prev = -2;
+  const pos = [];
+  for (let j = 0; j < sl.length && i < ql.length; j++) {
+    if (sl[j] !== ql[i]) continue;
+    score += 1;
+    if (prev === j - 1) score += 4;
+    if (j === 0 || /[\/\-_. ]/.test(s[j - 1])) score += 6;
+    else if (s[j] !== sl[j] && s[j - 1] === sl[j - 1]) score += 4;
+    pos.push(j); prev = j; i++;
+  }
+  return i < ql.length ? null : { score: score - pos[0] * 0.5 - s.length * 0.1, pos };
+}
+const isPathQuery = (q) => q.startsWith('~') || q.startsWith('/');
+
+function finderItems(q) {
+  if (isPathQuery(q)) return pathItems(q);
+  const out = [];
+  for (const c of finder.cands) {
+    let m = fuzzy(c.name, q);
+    if (!m && q) { const m2 = fuzzy(c.parent + '/' + c.name, q); if (m2) m = { score: m2.score * 0.5, pos: [] }; }
+    if (!m) continue;
+    out.push({ kind: 'cand', c, pos: m.pos, score: (q ? 10 * m.score : 0) + frecency(c) - (c.added && !q ? 1000 : 0) });
+  }
+  out.sort((a, b) => b.score - a.score);
+  let items;
+  if (q) { items = out.slice(0, 40); finder.hint = items.length ? '' : ''; }
+  else {
+    const recent = out.filter((x) => !x.c.added && x.c.source === 'claude');
+    items = (recent.length >= 6 ? recent : out.filter((x) => !x.c.added)).slice(0, 12);
+    finder.hint = items.length ? 'Recent projects' : '';
+  }
+  items.push({ kind: 'browse' });
+  return items;
+}
+
+function pathItems(q) {
+  if (q === '~') q = '~/';
+  const cut = q.lastIndexOf('/');
+  const dir = q.slice(0, cut + 1), leaf = q.slice(cut + 1);
+  finder.hint = dir;
+  const listing = finder.dirs.get(dir);
+  if (!listing) {
+    finder.dirs.set(dir, { pending: true });
+    native('listDir', { dir }).then((r) => {
+      finder.dirs.set(dir, r || { ok: false });
+      if (finder.open) { if (!finder.moved) finder.sel = 0; renderFinder(); }
+    });
+    return [{ kind: 'loading' }, { kind: 'browse', dir }];
+  }
+  if (listing.pending) return [{ kind: 'loading' }, { kind: 'browse', dir }];
+  if (!listing.ok) return [{ kind: 'missing', dir }, { kind: 'browse' }];
+  const l = leaf.toLowerCase();
+  const kids = (listing.entries || []).filter((e) => (l.startsWith('.') || !e.name.startsWith('.')) && e.name.toLowerCase().includes(l));
+  kids.sort((a, b) => (b.name.toLowerCase().startsWith(l) - a.name.toLowerCase().startsWith(l)));
+  const items = [];
+  if (!leaf) items.push({ kind: 'here', path: dir.length > 1 ? dir.slice(0, -1) : dir });
+  for (const e of kids.slice(0, 200)) items.push({ kind: 'child', name: e.name, branch: e.branch, path: dir + e.name, pos: l ? [...l].map((_, i) => e.name.toLowerCase().indexOf(l) + i) : [] });
+  if (leaf && !kids.length) items.push({ kind: 'nomatch', dir, leaf });
+  items.push({ kind: 'browse', dir });
+  return items;
+}
+
+function highlight(name, pos) {
+  if (!pos || !pos.length) return esc(name);
+  const set = new Set(pos);
+  return [...name].map((ch, i) => set.has(i) ? `<b>${esc(ch)}</b>` : esc(ch)).join('');
+}
+
+function renderFinder() {
+  const q = fInput.value;
+  finder.items = finderItems(q);
+  const selectable = (it) => !['loading', 'missing', 'nomatch'].includes(it.kind);
+  if (finder.sel >= finder.items.length || !selectable(finder.items[finder.sel] || {})) finder.sel = Math.max(0, finder.items.findIndex(selectable));
+  const rows = [];
+  if (finder.hint) rows.push(h('div.finder-hint' + (isPathQuery(q) ? '.path' : ''), { text: finder.hint }));
+  if (!q && finder.items.length === 1) rows.push(h('div.finder-empty', { html: 'Type to search your projects, or start with <kbd>~/</kbd> to browse folders.' }));
+  if (q && !isPathQuery(q) && finder.items.length === 1) rows.push(h('div.finder-empty', { html: `No projects match “${esc(q)}”. Type <kbd>~/</kbd> to browse folders.` }));
+  finder.items.forEach((it, idx) => {
+    if (it.kind === 'loading') { rows.push(h('div.finder-empty', { text: 'Loading…' })); return; }
+    if (it.kind === 'missing') { rows.push(h('div.finder-empty.err', { text: `No folder at ${it.dir}` })); return; }
+    if (it.kind === 'nomatch') { rows.push(h('div.finder-empty', { text: `Nothing in ${it.dir} starts with “${it.leaf}”` })); return; }
+    let ico = FOLDER_ICO, name = '', parent = '', badges = [], quiet = false, label = '';
+    if (it.kind === 'cand') {
+      name = highlight(it.c.name, it.pos); parent = it.c.parent; label = it.c.path;
+      if (it.c.branch) badges.push('⎇ ' + it.c.branch);
+      if (it.c.last) badges.push(ago(it.c.last));
+      if (it.c.added) badges.push('in sidebar');
+    } else if (it.kind === 'child') {
+      name = highlight(it.name, it.pos); label = it.path;
+      if (it.branch) badges.push('⎇ ' + it.branch);
+    } else if (it.kind === 'here') {
+      ico = PLUS_ICO; name = 'Add this folder'; parent = it.path; label = 'Add ' + it.path;
+    } else if (it.kind === 'browse') {
+      ico = DOTS_ICO; name = 'Browse in Finder…'; quiet = true; label = 'Browse in Finder';
+    }
+    const row = h('div.f-row' + (idx === finder.sel ? '.sel' : '') + (quiet ? '.quiet' : ''), { role: 'option', id: 'f-opt-' + idx, 'aria-selected': idx === finder.sel ? 'true' : 'false', 'aria-label': label },
+      h('span.f-ico', { html: ico }), h('span.f-name', { html: name }), h('span.f-parent', { text: parent }),
+      h('span.f-badges', null, badges.map((b) => h('span', { text: b }))));
+    row.addEventListener('mousemove', () => { if (finder.sel !== idx) { finder.sel = idx; paintSel(); } });
+    row.addEventListener('mousedown', (e) => { e.preventDefault(); finder.sel = idx; activateFinder(e.metaKey); });
+    rows.push(row);
+  });
+  $('#finder-list').replaceChildren(...rows);
+  fInput.setAttribute('aria-activedescendant', 'f-opt-' + finder.sel);
+}
+function paintSel() {
+  $('#finder-list').querySelectorAll('.f-row').forEach((r) => r.classList.toggle('sel', r.id === 'f-opt-' + finder.sel));
+  const el = $('#f-opt-' + finder.sel);
+  if (el) { el.scrollIntoView({ block: 'nearest' }); fInput.setAttribute('aria-activedescendant', el.id); }
+}
+function moveFinder(d) {
+  finder.moved = true;
+  const n = finder.items.length;
+  for (let k = 1; k <= n; k++) {
+    const i = (finder.sel + d * k + n * 2) % n;
+    if (!['loading', 'missing', 'nomatch'].includes(finder.items[i].kind)) { finder.sel = i; break; }
+  }
+  paintSel();
+}
+function addFolder(path, keepOpen) {
+  native('addProjectPath', { path, chat: !keepOpen });
+  finder.loadedAt = 0;
+  const c = finder.cands.find((x) => x.path === path);
+  if (c) c.added = true;
+  if (keepOpen) { fInput.value = ''; renderFinder(); toast('Added ' + path.split('/').pop()); }
+  else closeFinder();
+}
+function activateFinder(keepOpen) {
+  const it = finder.items[finder.sel]; if (!it) return;
+  if (it.kind === 'cand') addFolder(it.c.path, keepOpen);
+  else if (it.kind === 'child' || it.kind === 'here') addFolder(it.path, keepOpen);
+  else if (it.kind === 'browse') { closeFinder(); native('browseProject', { dir: it.dir }); }
+}
+function completeFinder() {
+  const it = finder.items[finder.sel]; if (!it) return;
+  if (it.kind === 'child') fInput.value = it.path + '/';
+  else if (it.kind === 'cand') fInput.value = (it.c.parent === '~' ? '~' : it.c.parent) + '/' + it.c.name + '/';
+  else return;
+  finder.sel = 0; finder.moved = false;
+  renderFinder();
+}
+fInput.addEventListener('input', () => { finder.sel = 0; finder.moved = false; renderFinder(); });
+fInput.addEventListener('keydown', (e) => {
+  if (e.key === 'ArrowDown' || (e.ctrlKey && e.key === 'n')) { e.preventDefault(); moveFinder(1); }
+  else if (e.key === 'ArrowUp' || (e.ctrlKey && e.key === 'p')) { e.preventDefault(); moveFinder(-1); }
+  else if (e.key === 'Enter') { e.preventDefault(); activateFinder(e.metaKey); }
+  else if (e.key === 'Tab') { e.preventDefault(); completeFinder(); }
+  else if (e.key === 'Escape') { e.preventDefault(); if (fInput.value) { fInput.value = ''; renderFinder(); } else closeFinder(); }
+  else if (e.key === 'Backspace' && isPathQuery(fInput.value) && fInput.value.endsWith('/') && fInput.selectionStart === fInput.value.length && fInput.value.length > 2) {
+    // Backspace on "~/dev/foo/" climbs to "~/dev/".
+    e.preventDefault();
+    const v = fInput.value.slice(0, -1);
+    fInput.value = v.slice(0, v.lastIndexOf('/') + 1);
+    finder.sel = 0; finder.moved = false;
+    renderFinder();
+  }
+  e.stopPropagation();
+});
+$('#finder').addEventListener('mousedown', (e) => { if (e.target.id === 'finder') closeFinder(); });
+
 // ---------------------------------------------------------------- global handlers
 document.addEventListener('click', (e) => {
   const copy = e.target.closest('.copy-code');
@@ -1718,6 +1937,7 @@ document.addEventListener('click', (e) => {
 });
 
 document.addEventListener('keydown', (e) => {
+  if (finder.open) { if (e.key === 'Escape') { e.preventDefault(); closeFinder(); } return; }
   if (e.key === 'Escape' && current) {
     if (!$('#menu').hidden) { closeMenu(); return; }
     const card = $('#dock .prompt-card');
@@ -1726,6 +1946,7 @@ document.addEventListener('keydown', (e) => {
   }
   if ((e.metaKey || e.ctrlKey) && e.key === 'f') return;
   // Typing anywhere focuses the composer.
+  if (finder.open) return;
   if (current && !e.metaKey && !e.ctrlKey && !e.altKey && e.key.length === 1 && !/^(INPUT|TEXTAREA|SELECT)$/.test(document.activeElement?.tagName)) input.focus();
 });
 
@@ -1738,8 +1959,9 @@ document.addEventListener('dragover', (e) => e.preventDefault());
 function appCommand(name) {
   if (name === 'interrupt' && current) interrupt(current);
   if (name === 'toggleActivity') toggleActivity();
-  if (name === 'focus') input.focus();
+  if (name === 'focus') { if (!finder.open) input.focus(); }
+  if (name === 'projectFinder') openFinder();
 }
 
-$('#welcome-add').addEventListener('click', () => native('addProject'));
+$('#welcome-add').addEventListener('click', () => openFinder());
 native('ready');

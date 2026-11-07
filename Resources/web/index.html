@@ -55,6 +55,16 @@
   </aside>
 </div>
 <div id="menu" class="menu" hidden></div>
+<div id="finder" class="finder" hidden>
+  <div class="finder-card" role="dialog" aria-label="Add project">
+    <div class="finder-search">
+      <svg viewBox="0 0 20 20" width="16" height="16" aria-hidden="true"><circle cx="8.5" cy="8.5" r="5.5" stroke="currentColor" stroke-width="1.6" fill="none"/><path d="M12.8 12.8 17 17" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"/></svg>
+      <input id="finder-input" type="text" spellcheck="false" autocomplete="off" placeholder="Search projects, or type a path like ~/dev" role="combobox" aria-controls="finder-list" aria-expanded="true" aria-autocomplete="list">
+    </div>
+    <div id="finder-list" class="finder-list" role="listbox"></div>
+    <div class="finder-foot"><span><kbd>↩</kbd> add</span><span><kbd>⇥</kbd> complete path</span><span><kbd>⌘↩</kbd> add another</span><span class="spacer"></span><span><kbd>esc</kbd> close</span></div>
+  </div>
+</div>
 <div id="toasts" class="toasts"></div>
 <script src="vendor/marked.min.js"></script>
 <script src="vendor/purify.min.js"></script>

@@ -38,6 +38,8 @@ final class AppModel: ObservableObject {
         }
         refreshProjects()
         DispatchQueue.main.async { self.handleLaunchArguments() }
+        // Warm the project finder so ⌘O opens instantly.
+        DispatchQueue.global(qos: .utility).asyncAfter(deadline: .now() + 1.5) { _ = ProjectFinder.candidates(added: []) }
         // Stop chat processes that have sat idle; they resume transparently on the next message.
         Timer.scheduledTimer(withTimeInterval: 300, repeats: true) { [weak self] _ in self?.reapIdle() }
         if Self.canNotify { UNUserNotificationCenter.current().requestAuthorization(options: [.alert, .sound]) { _, _ in } }
@@ -104,9 +106,9 @@ final class AppModel: ObservableObject {
         refreshWork?.cancel()
         let work = DispatchWorkItem { [weak self] in
             guard let self else { return }
-            let paths = self.extraPaths
+            let paths = self.extraPaths, added = self.addedAt
             DispatchQueue.global(qos: .userInitiated).async {
-                var list = ProjectStore.scan(paths: paths)
+                var list = ProjectStore.scan(paths: paths, addedAt: added)
                 // Titles only for the sessions we will show.
                 for i in list.indices {
                     for j in list[i].sessions.indices.prefix(30) {
@@ -123,19 +125,56 @@ final class AppModel: ObservableObject {
         DispatchQueue.main.asyncAfter(deadline: .now() + debounce, execute: work)
     }
 
+    /// ⌘O, sidebar "+", welcome button: open the project finder in the chat pane.
     func addProject() {
+        bridge.webView.window?.makeFirstResponder(bridge.webView)
+        bridge.command("projectFinder")
+    }
+
+    /// Add a folder to the sidebar (no dialog). Starts a new chat in it unless `openChat` is false.
+    func addProject(at rawPath: String, openChat: Bool = true) {
+        let path = URL(fileURLWithPath: ProjectFinder.expand(rawPath)).standardizedFileURL.path
+        var isDir: ObjCBool = false
+        guard FileManager.default.fileExists(atPath: path, isDirectory: &isDir), isDir.boolValue else {
+            bridge.toast("No folder at \(ProjectFinder.abbreviate(path))")
+            return
+        }
+        if !extraPaths.contains(path) { extraPaths.append(path) }
+        var added = addedAt; added[path] = Date().timeIntervalSince1970; addedAt = added
+        expanded.insert(path)
+        refreshProjects()
+        if openChat {
+            if let live = liveSessions.values.first(where: { $0.cwd == path && !$0.hasTranscript }) { select(live.key) }
+            else { newChat(in: path) }
+            bridge.command("focus")
+        }
+    }
+
+    /// Fallback: the system folder dialog, attached to the window and opened somewhere useful.
+    func browseForProject(startingAt hint: String? = nil) {
         let panel = NSOpenPanel()
         panel.canChooseDirectories = true
         panel.canChooseFiles = false
-        panel.allowsMultipleSelection = false
-        panel.prompt = "Add Project"
-        guard panel.runModal() == .OK, let url = panel.url else { return }
-        let path = url.path
-        if !extraPaths.contains(path) { extraPaths.append(path) }
-        expanded.insert(path)
-        refreshProjects()
-        newChat(in: path)
+        panel.allowsMultipleSelection = true
+        panel.canCreateDirectories = true
+        panel.prompt = "Add"
+        panel.message = "Choose one or more project folders"
+        let start = hint.map(ProjectFinder.expand) ?? extraPaths.last.map { ($0 as NSString).deletingLastPathComponent }
+        if let start, FileManager.default.fileExists(atPath: start) { panel.directoryURL = URL(fileURLWithPath: start) }
+        let done: (NSApplication.ModalResponse) -> Void = { [weak self] r in
+            guard r == .OK, let self else { return }
+            for (i, url) in panel.urls.enumerated() { self.addProject(at: url.path, openChat: i == panel.urls.count - 1) }
+        }
+        if let w = bridge.webView.window { panel.beginSheetModal(for: w, completionHandler: done) }
+        else { done(panel.runModal()) }
     }
+
+    private var addedAt: [String: Double] {
+        get { UserDefaults.standard.dictionary(forKey: "projectAddedAt") as? [String: Double] ?? [:] }
+        set { UserDefaults.standard.set(newValue, forKey: "projectAddedAt") }
+    }
+
+    var addedPaths: Set<String> { Set(extraPaths) }
 
     func hideProject(_ cwd: String) {
         for s in liveSessions.values where s.cwd == cwd { closeSession(s.key) }

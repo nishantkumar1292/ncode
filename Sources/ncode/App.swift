@@ -21,6 +21,8 @@ struct NcodeApp: App {
                     .keyboardShortcut("n", modifiers: .command)
                 Button("Add Project…") { model.addProject() }
                     .keyboardShortcut("o", modifiers: .command)
+                Button("Browse for Project Folder…") { model.browseForProject() }
+                    .keyboardShortcut("o", modifiers: [.command, .shift])
             }
             CommandMenu("Session") {
                 Button("Stop Response") { model.bridge.command("interrupt") }
@@ -48,6 +50,15 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
     }
     func applicationShouldTerminateAfterLastWindowClosed(_ sender: NSApplication) -> Bool { false }
     func applicationWillTerminate(_ n: Notification) { AppModel.shared.shutdown() }
+
+    /// Folders dropped on the Dock icon, or `open -a ncode <dir>` / `ncode .` (running or not).
+    func application(_ application: NSApplication, open urls: [URL]) {
+        let dirs = urls.filter { (try? $0.resourceValues(forKeys: [.isDirectoryKey]).isDirectory) == true }
+        DispatchQueue.main.async {
+            for (i, u) in dirs.enumerated() { AppModel.shared.addProject(at: u.path, openChat: i == dirs.count - 1) }
+            NSApp.activate(ignoringOtherApps: true)
+        }
+    }
     func applicationDidBecomeActive(_ n: Notification) { AppModel.shared.refreshProjects(debounce: 0.2) }
 
     func userNotificationCenter(_ c: UNUserNotificationCenter, didReceive r: UNNotificationResponse, withCompletionHandler done: @escaping () -> Void) {
@@ -132,6 +143,11 @@ struct SidebarView: View {
             }
         }
         .listStyle(.sidebar)
+        .dropDestination(for: URL.self) { urls, _ in
+            let dirs = urls.filter { (try? $0.resourceValues(forKeys: [.isDirectoryKey]).isDirectory) == true }
+            for (i, u) in dirs.enumerated() { model.addProject(at: u.path, openChat: i == dirs.count - 1) }
+            return !dirs.isEmpty
+        }
         .overlay {
             if model.projects.isEmpty {
                 VStack(spacing: 10) {

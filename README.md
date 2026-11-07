@@ -32,13 +32,24 @@ cd ncode
 ./build.sh --install     # builds build/ncode.app and copies it to /Applications
 ```
 
-Open from the terminal on a folder:
+`--install` also puts a small `ncode` command on your PATH, so you can open a folder from the terminal:
 
 ```bash
-open -a ncode --args "$PWD"
-# or with a first prompt
-/Applications/ncode.app/Contents/MacOS/ncode . --prompt "explain this repo" --model sonnet --mode plan
+ncode .            # like `code .`; works whether or not the app is running
 ```
+
+## Adding projects
+
+The sidebar starts empty. Press **⌘O** (or **+**) to open the project finder:
+
+- It lists the folders you've used Claude Code in, most recent first, and git repos in common code folders (`~/dev`, `~/code`, `~/src`…). Type to fuzzy-search.
+- Type a path starting with `~/` or `/` to browse like `cd`: **⇥** completes a folder, **⌫** on a trailing `/` goes up a level.
+- **↩** adds the folder and opens a chat. **⌘↩** adds it and keeps the finder open.
+- **Browse in Finder…** (⇧⌘O) is still there for anything else.
+
+You can also drop a folder on the sidebar, the welcome screen or the Dock icon.
+
+The finder only reads Claude Code's own records (`~/.claude.json`, `~/.claude/history.jsonl`) and scans common code folders. It never scans Desktop, Documents or Downloads, so it doesn't trigger macOS privacy prompts.
 
 ## Keyboard
 
@@ -49,7 +60,8 @@ open -a ncode --args "$PWD"
 | ⇧⇥ | Cycle permission mode: ask → accept edits → plan → auto |
 | ⌃B | Send running commands and subagents to the background |
 | ⌘N | New chat in the current project |
-| ⌘O | Add a project folder |
+| ⌘O | Add a project (finder) |
+| ⇧⌘O | Add a project with the system folder dialog |
 | ⌘J | Toggle the activity panel |
 | ⌘L | Focus the composer |
 | ⇧⌘T | Open this session in Terminal |
@@ -84,6 +96,7 @@ Sources/ncode/
   Session.swift      one `claude` child process per chat
   Bridge.swift       WKWebView + JS bridge + local file scheme
   ProjectStore.swift added folders + their sessions from ~/.claude/projects
+  ProjectFinder.swift candidates for the ⌘O project finder
   FileIndex.swift    @-mention file list
   ShellEnv.swift     login-shell env and `claude` lookup
 Resources/web/

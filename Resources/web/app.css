@@ -361,5 +361,31 @@ kbd { font: 11px var(--font-mono); padding: 1px 5px; border: 1px solid var(--bor
 .lightbox img { max-width: 92vw; max-height: 92vh; border-radius: 8px; }
 .drop-hint { position: fixed; inset: 8px; border: 2px dashed var(--accent); border-radius: 16px; background: var(--accent-soft); z-index: 40; pointer-events: none; display: grid; place-items: center; color: var(--accent); font-weight: 600; }
 
+/* ---------- project finder ---------- */
+.finder { position: fixed; inset: 0; z-index: 45; background: rgba(20, 20, 19, .16); display: flex; justify-content: center; align-items: flex-start; padding-top: 12vh; }
+@media (prefers-color-scheme: dark) { .finder { background: rgba(0, 0, 0, .4); } }
+.finder-card { width: min(600px, calc(100vw - 48px)); max-height: 70vh; display: flex; flex-direction: column; background: var(--surface); border: 1px solid var(--border-strong); border-radius: 16px; box-shadow: 0 12px 40px rgba(0, 0, 0, .18); overflow: hidden; animation: finder-in .12s ease-out; }
+@keyframes finder-in { from { opacity: 0; transform: translateY(-6px) scale(.99); } }
+@media (prefers-reduced-motion: reduce) { .finder-card { animation: none; } }
+.finder-search { display: flex; align-items: center; gap: 10px; padding: 14px 16px; border-bottom: 1px solid var(--border); color: var(--text-3); }
+#finder-input { flex: 1; min-width: 0; border: 0; outline: 0; background: transparent; color: var(--text); font: 16px/1.4 var(--font-ui); }
+#finder-input::placeholder { color: var(--text-3); }
+.finder-list { overflow-y: auto; padding: 6px; min-height: 60px; }
+.finder-hint.path { text-transform: none; letter-spacing: 0; font: 12px var(--font-mono); }
+.finder-hint { font-size: 11px; text-transform: uppercase; letter-spacing: .05em; color: var(--text-3); padding: 6px 10px 4px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.f-row { display: flex; align-items: center; gap: 10px; padding: 7px 10px 7px 8px; border-radius: 9px; cursor: pointer; border-left: 2px solid transparent; }
+.f-row.sel { background: var(--accent-soft); border-left-color: var(--accent); }
+.f-ico { width: 16px; height: 16px; flex: none; color: var(--text-3); display: grid; place-items: center; }
+.f-row.sel .f-ico { color: var(--accent); }
+.f-name { color: var(--text); font-weight: 500; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; max-width: 55%; }
+.f-name b { color: var(--accent); font-weight: 650; }
+.f-parent { flex: 1; min-width: 0; color: var(--text-3); font-size: 12.5px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.f-badges { flex: none; display: flex; gap: 8px; align-items: center; color: var(--text-3); font-size: 11.5px; font-variant-numeric: tabular-nums; }
+.f-row.quiet .f-name { color: var(--text-2); font-weight: 400; }
+.finder-empty { padding: 12px 12px 8px; color: var(--text-3); font-size: 13px; }
+.finder-empty.err { color: var(--err); }
+.finder-foot { display: flex; gap: 14px; align-items: center; padding: 8px 14px; border-top: 1px solid var(--border); color: var(--text-3); font-size: 11.5px; }
+.finder-foot kbd { margin-right: 3px; }
+
 /* long-history perf */
 .thread > .msg, .thread > .tool, .thread > .agent, .thread > .user-row { content-visibility: auto; contain-intrinsic-size: auto 60px; }

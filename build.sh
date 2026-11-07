@@ -21,7 +21,15 @@ echo "Built $APP ($(du -sh "$APP" | cut -f1))"
 
 for arg in "$@"; do
   case $arg in
-    --install) rm -rf /Applications/ncode.app && cp -R "$APP" /Applications/ && echo "Installed to /Applications/ncode.app" ;;
+    --install)
+      rm -rf /Applications/ncode.app && cp -R "$APP" /Applications/ && echo "Installed to /Applications/ncode.app"
+      # The `ncode` command (`ncode .` opens a folder, like `code .`). Never overwrite someone else's `ncode`.
+      for d in "$HOME/.local/bin" /opt/homebrew/bin /usr/local/bin; do
+        case ":$PATH:" in *":$d:"*) ;; *) continue ;; esac
+        [ -w "$d" ] || continue
+        if [ -e "$d/ncode" ] && ! grep -q "open -a ncode" "$d/ncode" 2>/dev/null; then echo "Skipped: $d/ncode exists and isn't ours"; break; fi
+        cp bin/ncode "$d/ncode" && chmod +x "$d/ncode" && echo "Installed the ncode command to $d/ncode"; break
+      done ;;
     --open) open "$APP" ;;
   esac
 done

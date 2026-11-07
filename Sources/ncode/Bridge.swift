@@ -125,6 +125,28 @@ final class Bridge: NSObject, WKScriptMessageHandlerWithReply, WKNavigationDeleg
         case "addProject":
             m.addProject(); replyHandler(true, nil)
 
+        case "projectCandidates":
+            let added = m.addedPaths
+            DispatchQueue.global(qos: .userInitiated).async {
+                let list = ProjectFinder.candidates(added: added)
+                DispatchQueue.main.async { replyHandler(list, nil) }
+            }
+
+        case "listDir":
+            let dir = body["dir"] as? String ?? "~"
+            DispatchQueue.global(qos: .userInitiated).async {
+                let r = ProjectFinder.listDir(dir)
+                DispatchQueue.main.async { replyHandler(r, nil) }
+            }
+
+        case "addProjectPath":
+            m.addProject(at: body["path"] as? String ?? "", openChat: body["chat"] as? Bool ?? true)
+            replyHandler(true, nil)
+
+        case "browseProject":
+            m.browseForProject(startingAt: body["dir"] as? String)
+            replyHandler(true, nil)
+
         case "newChat":
             if let s = m.session(key) { m.newChat(in: s.cwd) } else { m.newChatInCurrentProject() }
             replyHandler(true, nil)
@@ -192,6 +214,7 @@ final class Bridge: NSObject, WKScriptMessageHandlerWithReply, WKNavigationDeleg
 
     private func describeFile(_ url: URL) -> [String: Any] {
         var info: [String: Any] = ["path": url.path, "name": url.lastPathComponent]
+        if (try? url.resourceValues(forKeys: [.isDirectoryKey]).isDirectory) == true { info["dir"] = true }
         let type = UTType(filenameExtension: url.pathExtension)
         let size = (try? url.resourceValues(forKeys: [.fileSizeKey]).fileSize) ?? 0
         if let type, type.conforms(to: .image), size < 20_000_000,

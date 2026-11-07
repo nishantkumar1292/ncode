@@ -37,7 +37,7 @@ enum ProjectStore {
     }
 
     /// Only the folders the user added. Each one picks up its past Claude Code sessions.
-    static func scan(paths: [String]) -> [Project] {
+    static func scan(paths: [String], addedAt: [String: Double] = [:]) -> [Project] {
         let fm = FileManager.default
         var projects: [Project] = []
         for path in Set(paths) where fm.fileExists(atPath: path) {
@@ -53,9 +53,10 @@ enum ProjectStore {
                 }
                 metas.sort { $0.modified > $1.modified }
             }
-            let folderDate = (try? fm.attributesOfItem(atPath: path)[.modificationDate] as? Date) ?? .distantPast
+            let added = addedAt[path].map { Date(timeIntervalSince1970: $0) } ?? .distantPast
+            let lastSession = metas.first?.modified ?? .distantPast
             projects.append(Project(cwd: path, transcriptDirs: dir.map { [$0] } ?? [], sessions: metas,
-                                    lastActivity: metas.first?.modified ?? folderDate, pinned: true))
+                                    lastActivity: max(added, lastSession), pinned: true))
         }
         projects.sort { $0.lastActivity > $1.lastActivity }
         return projects

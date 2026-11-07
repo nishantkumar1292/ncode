@@ -1,0 +1,4 @@
+#!/bin/sh
+# Open a folder in ncode, like `code .`:   ncode [folder]
+dir=$(cd "${1:-.}" 2>/dev/null && pwd -P) || { echo "ncode: no such folder: ${1:-.}" >&2; exit 1; }
+exec open -a ncode "$dir"
