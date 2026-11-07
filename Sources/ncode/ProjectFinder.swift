@@ -15,14 +15,14 @@ enum ProjectFinder {
     private static let home = NSHomeDirectory()
 
     /// Cached candidates; rebuilt when older than a minute.
-    static func candidates(added: Set<String>) -> [[String: Any]] {
+    static func candidates(added: Set<String>, accounts: [ClaudeAccount]) -> [[String: Any]] {
         lock.lock()
         let cached = cache
         lock.unlock()
         var list: [[String: Any]]
         if let (at, c) = cached, Date().timeIntervalSince(at) < 60 { list = c }
         else {
-            list = build()
+            list = build(accounts)
             lock.lock(); cache = (Date(), list); lock.unlock()
         }
         return list.map { c in
@@ -44,36 +44,34 @@ enum ProjectFinder {
             || ["/private/tmp", "/tmp", "/private/var/folders", "/var/folders"].contains { p.hasPrefix($0) }
     }
 
-    private static func build() -> [[String: Any]] {
+    private static func build(_ accounts: [ClaudeAccount]) -> [[String: Any]] {
         var byPath: [String: [String: Any]] = [:]
 
-        // 1. Claude Code's own records.
-        let configDir = ProjectStore.claudeDir
-        let claudeJson = ProcessInfo.processInfo.environment["CLAUDE_CONFIG_DIR"].map { URL(fileURLWithPath: $0).appendingPathComponent(".claude.json") }
-            ?? URL(fileURLWithPath: home).appendingPathComponent(".claude.json")
-        var last: [String: Double] = [:], uses: [String: Int] = [:]
-        if let data = try? Data(contentsOf: claudeJson),
-           let obj = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
-           let projects = obj["projects"] as? [String: Any] {
-            for (path, v) in projects {
-                let t = ((v as? [String: Any])?["lastStartTime"] as? Double) ?? 0
-                last[path] = max(last[path] ?? 0, t)
+        // 1. Claude Code's own records, from every account (config dir).
+        var last: [String: Double] = [:], uses: [String: Int] = [:], owner: [String: (ClaudeAccount, Double)] = [:]
+        for account in accounts {
+            if let data = try? Data(contentsOf: account.configFile),
+               let obj = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+               let projects = obj["projects"] as? [String: Any] {
+                for (path, v) in projects {
+                    let t = ((v as? [String: Any])?["lastStartTime"] as? Double) ?? 0
+                    last[path] = max(last[path] ?? 0, t)
+                    if t >= (owner[path]?.1 ?? -1) { owner[path] = (account, t) }
+                }
             }
-        }
-        if let data = try? Data(contentsOf: configDir.appendingPathComponent("history.jsonl")) {
-            for line in data.split(separator: 0x0A) {
-                guard let o = try? JSONSerialization.jsonObject(with: line) as? [String: Any],
-                      let p = o["project"] as? String else { continue }
-                let t = (o["timestamp"] as? Double) ?? 0
-                last[p] = max(last[p] ?? 0, t)
-                uses[p, default: 0] += 1
+            for (path, u) in Accounts.usage(account) {
+                last[path] = max(last[path] ?? 0, u.last)
+                uses[path, default: 0] += u.count
+                if u.last >= (owner[path]?.1 ?? -1) { owner[path] = (account, u.last) }
             }
         }
         let fm = FileManager.default
         for (path, t) in last where !isNoise(path) {
             let prot = isProtected(path)
             if !prot && !fm.fileExists(atPath: path) { continue }
-            byPath[path] = entry(path, last: t, uses: uses[path] ?? 0, source: "claude", protected: prot)
+            var e = entry(path, last: t, uses: uses[path] ?? 0, source: "claude", protected: prot)
+            if let a = owner[path]?.0 { e["account"] = a.name; e["accountDir"] = a.dir ?? "" }
+            byPath[path] = e
         }
 
         // 2. Quick scan of common code folders (never protected ones, never all of home).

@@ -5,6 +5,7 @@ struct SessionMeta: Identifiable, Hashable {
     var title: String
     var modified: Date
     let file: URL
+    var configDir: String? = nil   // account the transcript belongs to (nil = default)
 }
 
 struct Project: Identifiable, Hashable {
@@ -36,33 +37,34 @@ enum ProjectStore {
         String(cwd.map { ($0.isASCII && ($0.isLetter || $0.isNumber)) ? $0 : "-" })
     }
 
-    /// Only the folders the user added. Each one picks up its past Claude Code sessions.
-    static func scan(paths: [String], addedAt: [String: Double] = [:]) -> [Project] {
+    /// Only the folders the user added. Each one lists its past sessions from every account.
+    static func scan(paths: [String], addedAt: [String: Double] = [:], accounts: [ClaudeAccount]) -> [Project] {
         let fm = FileManager.default
         var projects: [Project] = []
         for path in Set(paths) where fm.fileExists(atPath: path) {
-            let dir = transcriptDir(for: path)
-            var metas: [SessionMeta] = []
-            if let dir {
+            var metas: [SessionMeta] = [], dirs: [URL] = []
+            for account in accounts {
+                guard let dir = transcriptDir(for: path, in: account.projectsDir) else { continue }
+                dirs.append(dir)
                 let files = ((try? fm.contentsOfDirectory(at: dir, includingPropertiesForKeys: [.contentModificationDateKey, .fileSizeKey], options: [.skipsHiddenFiles])) ?? [])
                     .filter { $0.pathExtension == "jsonl" }
                 for f in files {
                     let vals = try? f.resourceValues(forKeys: [.contentModificationDateKey, .fileSizeKey])
                     if (vals?.fileSize ?? 0) < 200 { continue }
-                    metas.append(SessionMeta(id: f.deletingPathExtension().lastPathComponent, title: "", modified: vals?.contentModificationDate ?? .distantPast, file: f))
+                    metas.append(SessionMeta(id: f.deletingPathExtension().lastPathComponent, title: "", modified: vals?.contentModificationDate ?? .distantPast, file: f, configDir: account.dir))
                 }
-                metas.sort { $0.modified > $1.modified }
             }
+            metas.sort { $0.modified > $1.modified }
             let added = addedAt[path].map { Date(timeIntervalSince1970: $0) } ?? .distantPast
             let lastSession = metas.first?.modified ?? .distantPast
-            projects.append(Project(cwd: path, transcriptDirs: dir.map { [$0] } ?? [], sessions: metas,
+            projects.append(Project(cwd: path, transcriptDirs: dirs, sessions: metas,
                                     lastActivity: max(added, lastSession), pinned: true))
         }
         projects.sort { $0.lastActivity > $1.lastActivity }
         return projects
     }
 
-    private static func transcriptDir(for path: String) -> URL? {
+    static func transcriptDir(for path: String, in projectsDir: URL) -> URL? {
         let fm = FileManager.default
         let encoded = encode(path)
         let direct = projectsDir.appendingPathComponent(encoded)
@@ -152,13 +154,15 @@ enum ProjectStore {
         return (try? JSONSerialization.jsonObject(with: Data(bytes), options: .fragmentsAllowed)) as? String
     }
 
-    /// Find a session's transcript by id across all projects.
-    static func locate(sessionId: String) -> (file: URL, cwd: String)? {
-        let dirs = (try? FileManager.default.contentsOfDirectory(at: projectsDir, includingPropertiesForKeys: nil)) ?? []
-        for d in dirs {
-            let f = d.appendingPathComponent("\(sessionId).jsonl")
-            if FileManager.default.fileExists(atPath: f.path),
-               let cwd = readCwd([SessionMeta(id: sessionId, title: "", modified: .distantPast, file: f)]) { return (f, cwd) }
+    /// Find a session's transcript by id across all projects of all accounts.
+    static func locate(sessionId: String, accounts: [ClaudeAccount]) -> (file: URL, cwd: String, configDir: String?)? {
+        for account in accounts {
+            let dirs = (try? FileManager.default.contentsOfDirectory(at: account.projectsDir, includingPropertiesForKeys: nil)) ?? []
+            for d in dirs {
+                let f = d.appendingPathComponent("\(sessionId).jsonl")
+                if FileManager.default.fileExists(atPath: f.path),
+                   let cwd = readCwd([SessionMeta(id: sessionId, title: "", modified: .distantPast, file: f)]) { return (f, cwd, account.dir) }
+            }
         }
         return nil
     }

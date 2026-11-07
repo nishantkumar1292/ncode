@@ -20,6 +20,8 @@ final class Session: ObservableObject, Identifiable {
     var hasTranscript: Bool
     var historyLoaded = false
     var transcriptFile: URL?
+    /// Claude config dir (account) this chat runs on; nil = the default account.
+    var configDir: String?
 
     private var process: Process?
     private var stdinHandle: FileHandle?
@@ -73,6 +75,7 @@ final class Session: ObservableObject, Identifiable {
         p.currentDirectoryURL = URL(fileURLWithPath: cwd)
         var env = env
         env.removeValue(forKey: "CLAUDECODE")
+        if let configDir { env["CLAUDE_CONFIG_DIR"] = configDir }
         p.environment = env
 
         let inPipe = Pipe(), outPipe = Pipe(), errPipe = Pipe()

@@ -11,6 +11,7 @@ final class AppModel: ObservableObject {
     @Published var claudePath: String?
     @Published var envReady = false
     @Published var expanded: Set<String> = []
+    @Published var accounts: [ClaudeAccount] = Accounts.discover(extra: UserDefaults.standard.stringArray(forKey: "extraConfigDirs") ?? [])
 
     private(set) var env: [String: String] = ProcessInfo.processInfo.environment
     let bridge = Bridge()
@@ -39,7 +40,8 @@ final class AppModel: ObservableObject {
         refreshProjects()
         DispatchQueue.main.async { self.handleLaunchArguments() }
         // Warm the project finder so ⌘O opens instantly.
-        DispatchQueue.global(qos: .utility).asyncAfter(deadline: .now() + 1.5) { _ = ProjectFinder.candidates(added: []) }
+        let accts = accounts
+        DispatchQueue.global(qos: .utility).asyncAfter(deadline: .now() + 1.5) { _ = ProjectFinder.candidates(added: [], accounts: accts) }
         // Stop chat processes that have sat idle; they resume transparently on the next message.
         Timer.scheduledTimer(withTimeInterval: 300, repeats: true) { [weak self] _ in self?.reapIdle() }
         if Self.canNotify { UNUserNotificationCenter.current().requestAuthorization(options: [.alert, .sound]) { _, _ in } }
@@ -78,8 +80,8 @@ final class AppModel: ObservableObject {
             }
             i += 1
         }
-        if let resume, let found = ProjectStore.locate(sessionId: resume) {
-            let s = liveSessions[resume] ?? makeSession(key: resume, cwd: found.cwd, title: ProjectStore.title(for: SessionMeta(id: resume, title: "", modified: .distantPast, file: found.file)), hasTranscript: true)
+        if let resume, let found = ProjectStore.locate(sessionId: resume, accounts: accounts) {
+            let s = liveSessions[resume] ?? makeSession(key: resume, cwd: found.cwd, title: ProjectStore.title(for: SessionMeta(id: resume, title: "", modified: .distantPast, file: found.file)), hasTranscript: true, configDir: found.configDir)
             s.transcriptFile = found.file
             if !extraPaths.contains(found.cwd) { extraPaths.append(found.cwd); refreshProjects() }
             expanded.insert(found.cwd)
@@ -106,9 +108,9 @@ final class AppModel: ObservableObject {
         refreshWork?.cancel()
         let work = DispatchWorkItem { [weak self] in
             guard let self else { return }
-            let paths = self.extraPaths, added = self.addedAt
+            let paths = self.extraPaths, added = self.addedAt, accounts = self.accounts
             DispatchQueue.global(qos: .userInitiated).async {
-                var list = ProjectStore.scan(paths: paths, addedAt: added)
+                var list = ProjectStore.scan(paths: paths, addedAt: added, accounts: accounts)
                 // Titles only for the sessions we will show.
                 for i in list.indices {
                     for j in list[i].sessions.indices.prefix(30) {
@@ -132,7 +134,7 @@ final class AppModel: ObservableObject {
     }
 
     /// Add a folder to the sidebar (no dialog). Starts a new chat in it unless `openChat` is false.
-    func addProject(at rawPath: String, openChat: Bool = true) {
+    func addProject(at rawPath: String, openChat: Bool = true, account accountDir: String? = nil) {
         let path = URL(fileURLWithPath: ProjectFinder.expand(rawPath)).standardizedFileURL.path
         var isDir: ObjCBool = false
         guard FileManager.default.fileExists(atPath: path, isDirectory: &isDir), isDir.boolValue else {
@@ -140,6 +142,7 @@ final class AppModel: ObservableObject {
             return
         }
         if !extraPaths.contains(path) { extraPaths.append(path) }
+        if let accountDir { var map = projectAccounts; map[path] = accountDir; projectAccounts = map }
         var added = addedAt; added[path] = Date().timeIntervalSince1970; addedAt = added
         expanded.insert(path)
         refreshProjects()
@@ -169,6 +172,53 @@ final class AppModel: ObservableObject {
         else { done(panel.runModal()) }
     }
 
+    // MARK: - Accounts (Claude config dirs)
+
+    /// Project path → config dir ("" = default account).
+    private var projectAccounts: [String: String] {
+        get { UserDefaults.standard.dictionary(forKey: "projectAccount") as? [String: String] ?? [:] }
+        set { UserDefaults.standard.set(newValue, forKey: "projectAccount") }
+    }
+
+    func accountFor(dir: String?) -> ClaudeAccount {
+        accounts.first { $0.dir == dir } ?? Accounts.identity(ClaudeAccount(dir: dir))
+    }
+
+    /// The account new chats in this project use: the user's choice, else the one used most recently.
+    func account(forProject path: String) -> ClaudeAccount {
+        if let saved = projectAccounts[path] { return accountFor(dir: saved.isEmpty ? nil : saved) }
+        let detected = Accounts.detect(for: path, among: accounts) ?? accountFor(dir: nil)
+        var map = projectAccounts; map[path] = detected.dir ?? ""; projectAccounts = map
+        return detected
+    }
+
+    /// Switch a project's account. A chat can't move between accounts, so if the current chat has
+    /// already started, this opens a new chat on the new account.
+    func setAccount(_ a: ClaudeAccount, forProject path: String) {
+        var map = projectAccounts; map[path] = a.dir ?? ""; projectAccounts = map
+        objectWillChange.send()
+        if let k = selectedKey, let s = liveSessions[k], s.cwd == path {
+            if !s.isLive && !s.hasTranscript { s.configDir = a.dir; bridge.open(session: s); bridge.toast("This chat will use \(a.title)") }
+            else if s.configDir != a.dir { newChat(in: path); bridge.toast("New chat on \(a.title)") }
+        }
+    }
+
+    func addAccountFolder() {
+        let panel = NSOpenPanel()
+        panel.canChooseDirectories = true
+        panel.canChooseFiles = false
+        panel.showsHiddenFiles = true
+        panel.directoryURL = URL(fileURLWithPath: NSHomeDirectory())
+        panel.message = "Choose a Claude config folder (the folder you point CLAUDE_CONFIG_DIR at)"
+        panel.prompt = "Add Account"
+        guard panel.runModal() == .OK, let url = panel.url else { return }
+        var extra = UserDefaults.standard.stringArray(forKey: "extraConfigDirs") ?? []
+        if !extra.contains(url.path) { extra.append(url.path) }
+        UserDefaults.standard.set(extra, forKey: "extraConfigDirs")
+        accounts = Accounts.discover(extra: extra)
+        if !accounts.contains(where: { $0.dir == url.path }) { bridge.toast("No Claude config (.claude.json) found in that folder") }
+    }
+
     private var addedAt: [String: Double] {
         get { UserDefaults.standard.dictionary(forKey: "projectAddedAt") as? [String: Double] ?? [:] }
         set { UserDefaults.standard.set(newValue, forKey: "projectAddedAt") }
@@ -188,7 +238,7 @@ final class AppModel: ObservableObject {
 
     func newChat(in cwd: String) {
         let key = UUID().uuidString.lowercased()
-        let s = makeSession(key: key, cwd: cwd, title: "New chat", hasTranscript: false)
+        let s = makeSession(key: key, cwd: cwd, title: "New chat", hasTranscript: false, configDir: account(forProject: cwd).dir)
         s.historyLoaded = true
         expanded.insert(cwd)
         select(s.key)
@@ -202,14 +252,16 @@ final class AppModel: ObservableObject {
 
     func open(_ meta: SessionMeta, in project: Project) {
         if liveSessions[meta.id] == nil {
-            _ = makeSession(key: meta.id, cwd: project.cwd, title: meta.title, hasTranscript: true)
+            let s = makeSession(key: meta.id, cwd: project.cwd, title: meta.title, hasTranscript: true, configDir: meta.configDir)
+            s.transcriptFile = meta.file
         }
         select(meta.id)
     }
 
     @discardableResult
-    private func makeSession(key: String, cwd: String, title: String, hasTranscript: Bool) -> Session {
+    private func makeSession(key: String, cwd: String, title: String, hasTranscript: Bool, configDir: String? = nil) -> Session {
         let s = Session(key: key, cwd: cwd, title: title, hasTranscript: hasTranscript)
+        s.configDir = configDir
         s.onLine = { [weak self] sess, line in self?.bridge.event(key: sess.key, line: line) }
         s.onAttention = { [weak self] sess, reason in self?.attention(sess, reason) }
         liveSessions[key] = s
@@ -223,7 +275,7 @@ final class AppModel: ObservableObject {
         if !s.historyLoaded {
             s.historyLoaded = true
             let file = s.transcriptFile ?? project(for: s.cwd)?.sessions.first { $0.id == key }?.file
-                ?? ProjectStore.projectsDir.appendingPathComponent(ProjectStore.encode(s.cwd)).appendingPathComponent("\(key).jsonl")
+                ?? self.accountFor(dir: s.configDir).projectsDir.appendingPathComponent(ProjectStore.encode(s.cwd)).appendingPathComponent("\(key).jsonl")
             DispatchQueue.global(qos: .userInitiated).async {
                 let lines = ProjectStore.historyLines(file: file)
                 DispatchQueue.main.async { self.bridge.history(key: key, lines: lines) }
@@ -282,7 +334,7 @@ final class AppModel: ObservableObject {
 
     /// Pick up the title Claude generates for the session (or one set with /rename).
     private func refreshTitle(_ s: Session) {
-        let file = ProjectStore.projectsDir.appendingPathComponent(ProjectStore.encode(s.cwd)).appendingPathComponent("\(s.sessionId).jsonl")
+        let file = accountFor(dir: s.configDir).projectsDir.appendingPathComponent(ProjectStore.encode(s.cwd)).appendingPathComponent("\(s.sessionId).jsonl")
         let candidates = [file] + (project(for: s.cwd)?.transcriptDirs.map { $0.appendingPathComponent("\(s.sessionId).jsonl") } ?? [])
         DispatchQueue.global().asyncAfter(deadline: .now() + 2.0) {
             for f in candidates {
@@ -308,7 +360,8 @@ final class AppModel: ObservableObject {
         guard let s = liveSessions[key] else { return }
         let claude = claudePath ?? "claude"
         let resume = s.hasTranscript ? " --resume \(s.sessionId)" : ""
-        let script = "#!/bin/zsh -l\ncd \(shellQuote(s.cwd)) && \(shellQuote(claude))\(resume)\n"
+        let account = s.configDir.map { "export CLAUDE_CONFIG_DIR=\(shellQuote($0))\n" } ?? ""
+        let script = "#!/bin/zsh -l\n\(account)cd \(shellQuote(s.cwd)) && \(shellQuote(claude))\(resume)\n"
         let url = FileManager.default.temporaryDirectory.appendingPathComponent("ncode-\(s.key.prefix(8)).command")
         do {
             try script.write(to: url, atomically: true, encoding: .utf8)

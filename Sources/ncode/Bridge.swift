@@ -62,7 +62,9 @@ final class Bridge: NSObject, WKScriptMessageHandlerWithReply, WKNavigationDeleg
     }
 
     func open(session s: Session) {
-        postObj(["t": "open", "k": s.key, "cwd": s.cwd, "title": s.title, "resumable": s.hasTranscript, "live": s.isLive])
+        let a = model?.accountFor(dir: s.configDir)
+        postObj(["t": "open", "k": s.key, "cwd": s.cwd, "title": s.title, "resumable": s.hasTranscript, "live": s.isLive,
+                 "account": ["name": a?.name ?? "default", "email": a?.email ?? NSNull(), "org": a?.org ?? NSNull(), "dir": s.configDir ?? ""]])
     }
 
     func select(key: String?) { postObj(["t": "select", "k": key ?? NSNull()]) }
@@ -126,9 +128,9 @@ final class Bridge: NSObject, WKScriptMessageHandlerWithReply, WKNavigationDeleg
             m.addProject(); replyHandler(true, nil)
 
         case "projectCandidates":
-            let added = m.addedPaths
+            let added = m.addedPaths, accounts = m.accounts
             DispatchQueue.global(qos: .userInitiated).async {
-                let list = ProjectFinder.candidates(added: added)
+                let list = ProjectFinder.candidates(added: added, accounts: accounts)
                 DispatchQueue.main.async { replyHandler(list, nil) }
             }
 
@@ -140,7 +142,7 @@ final class Bridge: NSObject, WKScriptMessageHandlerWithReply, WKNavigationDeleg
             }
 
         case "addProjectPath":
-            m.addProject(at: body["path"] as? String ?? "", openChat: body["chat"] as? Bool ?? true)
+            m.addProject(at: body["path"] as? String ?? "", openChat: body["chat"] as? Bool ?? true, account: body["account"] as? String)
             replyHandler(true, nil)
 
         case "browseProject":
