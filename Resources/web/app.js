@@ -1037,6 +1037,7 @@ function onControlResponse(S, o) {
     if (r.subtype === 'success' && r.response) {
       S.init = r.response;
       if (r.response.models) { lastModels = r.response.models; store.set('models', lastModels); }
+      if (S === current && modelMenu && !$('#menu').hidden) openModelMenu(modelMenu.anchor, modelMenu.older);
       if (r.response.current_permission_mode) S.mode = r.response.current_permission_mode;
       S.live = true;
       for (const pr of r.response.pending_permission_requests || []) onControlRequest(S, pr);
@@ -1469,30 +1470,51 @@ async function setEffort(S, level) {
   if (S.live) { const r = await S.request('apply_flag_settings', { settings: { effortLevel: level } }); if (r) toast('Effort: ' + level); }
   updateChrome();
 }
-function modelsFor(S) { return S.init?.models || lastModels || [{ value: 'default', displayName: 'Default' }, { value: 'opus', displayName: 'Opus' }, { value: 'sonnet', displayName: 'Sonnet' }, { value: 'haiku', displayName: 'Haiku' }]; }
+// Placeholder until the CLI reports its real list (opening the menu starts the session to fetch it).
+const FALLBACK_MODELS = ['default', 'opus', 'fable', 'sonnet', 'haiku'].map((v) => ({ value: v, displayName: v === 'default' ? 'Default' : v[0].toUpperCase() + v.slice(1) }));
+function modelsFor(S) { return S.init?.models || lastModels || FALLBACK_MODELS; }
+/** Aliases (opus, sonnet…) always point at the newest model in that family; pinned ids are older versions. */
+const isAlias = (m) => !/^claude-/.test(m.value);
 function modelName(S, v) {
-  if (!v) return 'Default';
-  const m = modelsFor(S).find((x) => x.value === v || x.resolvedModel === v);
+  const list = modelsFor(S);
+  if (!v || v === 'default') {
+    const d = list.find((x) => x.value === 'default');
+    const same = d?.resolvedModel && list.find((x) => x.value !== 'default' && x.resolvedModel === d.resolvedModel);
+    return same ? same.displayName : 'Default';
+  }
+  const m = list.find((x) => x.value === v) || list.find((x) => x.resolvedModel === v && x.value !== 'default');
   if (m) return m.displayName.replace(/\s*\(recommended\)/i, '');
   return v.replace(/^claude-/, '').replace(/-(\d+)-(\d+)$/, ' $1.$2').replace(/-/g, ' ').replace(/\b\w/g, (c) => c.toUpperCase());
+}
+
+let modelMenu = null;   // { anchor, older } while the model menu is open
+function openModelMenu(anchor, older) {
+  const S = current; if (!S) return;
+  if (!S.init && !S.live) warmUp(S);   // fetch the CLI's real model list; no message is sent
+  const list = modelsFor(S);
+  let cur = S.opts.model ? list.find((m) => m.value === S.opts.model) : null;
+  if (!cur && S.model) cur = list.find((m) => m.value === S.model) || list.find((m) => m.resolvedModel === S.model && m.value !== 'default');
+  if (!cur) cur = list.find((m) => m.value === 'default') || list[0];
+  const row = (m) => ({ label: m.displayName, desc: m.description, checked: m === cur, action: () => setModel(S, m.value) });
+  const latest = list.filter(isAlias), pinned = list.filter((m) => !isAlias(m));
+  const items = latest.map(row);
+  if (!S.init && !lastModels) items.push({ head: 'Loading the latest models…' });
+  if (pinned.length) {
+    items.push({ sep: true });
+    if (older || pinned.includes(cur)) items.push({ head: 'Older models' }, ...pinned.map(row));
+    else items.push({ label: 'Older models…', desc: pinned.map((m) => m.displayName).slice(0, 4).join(', ') + (pinned.length > 4 ? '…' : ''), action: () => openModelMenu(anchor, true) });
+  }
+  const levels = cur?.supportedEffortLevels || ['low', 'medium', 'high', 'xhigh', 'max'];
+  items.push({ sep: true }, { head: 'Effort' }, { seg: levels, value: S.opts.effort, action: (lvl) => setEffort(S, lvl) });
+  modelMenu = { anchor, older };
+  openMenu(anchor, items, 'up', true);
 }
 
 $('#mode').addEventListener('click', (e) => {
   const S = current; if (!S) return;
   openMenu(e.currentTarget, MODES.map((m) => ({ label: m.label, desc: m.desc, checked: S.mode === m.id, action: () => setMode(S, m.id) })), 'up');
 });
-$('#model').addEventListener('click', (e) => {
-  const S = current; if (!S) return;
-  const list = modelsFor(S);
-  let curIdx = S.opts.model ? list.findIndex((m) => m.value === S.opts.model) : -1;
-  if (curIdx < 0 && S.model) curIdx = list.findIndex((m) => m.value === S.model || m.resolvedModel === S.model);
-  if (curIdx < 0 && !S.model) curIdx = 0;
-  const items = list.map((m, idx) => ({ label: m.displayName, desc: m.description, checked: idx === curIdx, action: () => setModel(S, m.value) }));
-  const curModel = modelsFor(S).find((m) => m.value === (S.opts.model || 'default')) || modelsFor(S)[0];
-  const levels = curModel?.supportedEffortLevels || ['low', 'medium', 'high', 'xhigh', 'max'];
-  items.push({ sep: true }, { head: 'Effort' }, { seg: levels, value: S.opts.effort, action: (lvl) => setEffort(S, lvl) });
-  openMenu(e.currentTarget, items, 'up', true);
-});
+$('#model').addEventListener('click', (e) => openModelMenu(e.currentTarget, false));
 
 // ---- menus
 function openMenu(anchor, items, dir, alignRight) {
@@ -1511,7 +1533,7 @@ function openMenu(anchor, items, dir, alignRight) {
   setTimeout(() => document.addEventListener('mousedown', menuAway, { once: true }), 0);
 }
 function menuAway(e) { if (!e.target.closest('#menu')) closeMenu(); else document.addEventListener('mousedown', menuAway, { once: true }); }
-function closeMenu() { $('#menu').hidden = true; }
+function closeMenu() { $('#menu').hidden = true; modelMenu = null; }
 
 // ---- popover: slash commands & @files
 const pop = { open: false, items: [], sel: 0, kind: '', start: 0 };
