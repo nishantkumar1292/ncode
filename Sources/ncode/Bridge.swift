@@ -63,8 +63,10 @@ final class Bridge: NSObject, WKScriptMessageHandlerWithReply, WKNavigationDeleg
 
     func open(session s: Session) {
         let a = model?.accountFor(dir: s.configDir)
+        let project = model?.account(forProject: s.cwd)
         postObj(["t": "open", "k": s.key, "cwd": s.cwd, "title": s.title, "resumable": s.hasTranscript, "live": s.isLive,
-                 "account": ["name": a?.name ?? "default", "email": a?.email ?? NSNull(), "org": a?.org ?? NSNull(), "dir": s.configDir ?? ""]])
+                 "account": ["name": a?.name ?? "default", "email": a?.email ?? NSNull(), "org": a?.org ?? NSNull(), "dir": s.configDir ?? "", "slot": a?.slot ?? 0, "initial": a?.initial ?? "D"],
+                 "projectAccount": project?.dir ?? ""])
     }
 
     func select(key: String?) { postObj(["t": "select", "k": key ?? NSNull()]) }
@@ -77,7 +79,10 @@ final class Bridge: NSObject, WKScriptMessageHandlerWithReply, WKNavigationDeleg
 
     func sendConfig() {
         guard let m = model else { return }
-        postObj(["t": "config", "claude": m.claudePath ?? NSNull(), "home": NSHomeDirectory(), "envReady": m.envReady])
+        let accounts: [[String: Any]] = m.accounts.map { a in
+            ["dir": a.dir ?? "", "name": a.name, "email": a.email ?? NSNull(), "org": a.org ?? NSNull(), "slot": a.slot, "initial": a.initial]
+        }
+        postObj(["t": "config", "claude": m.claudePath ?? NSNull(), "home": NSHomeDirectory(), "envReady": m.envReady, "accounts": accounts])
     }
 
     private func jsonQuote(_ s: String) -> String {
@@ -126,6 +131,15 @@ final class Bridge: NSObject, WKScriptMessageHandlerWithReply, WKNavigationDeleg
 
         case "addProject":
             m.addProject(); replyHandler(true, nil)
+
+        case "setAccount":
+            guard let s = m.session(key) else { replyHandler(false, nil); return }
+            let dir = body["dir"] as? String ?? ""
+            m.setAccount(m.accountFor(dir: dir.isEmpty ? nil : dir), forProject: s.cwd)
+            replyHandler(true, nil)
+
+        case "addAccountFolder":
+            m.addAccountFolder(); replyHandler(true, nil)
 
         case "projectCandidates":
             let added = m.addedPaths, accounts = m.accounts

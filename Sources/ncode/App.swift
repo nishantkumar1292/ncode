@@ -189,15 +189,17 @@ struct ProjectSection: View {
     }
 
     /// Live sessions (including unsaved new chats) first, then saved transcripts.
-    private var rows: [(key: String, title: String, date: Date)] {
+    private var rows: [(key: String, title: String, date: Date, other: ClaudeAccount?)] {
         var seen = Set<String>()
-        var out: [(String, String, Date)] = []
+        var out: [(String, String, Date, ClaudeAccount?)] = []
+        let multi = model.accounts.count > 1
+        func other(_ dir: String?) -> ClaudeAccount? { multi && dir != project.accountDir ? model.accountFor(dir: dir) : nil }
         let live = model.liveSessions.values.filter { $0.cwd == project.cwd && (!$0.hasTranscript || $0.isLive) }
             .sorted { $0.lastActivity > $1.lastActivity }
-        for s in live { seen.insert(s.key); out.append((s.key, s.title, s.lastActivity)) }
+        for s in live { seen.insert(s.key); out.append((s.key, s.title, s.lastActivity, other(s.configDir))) }
         for m in project.sessions where !seen.contains(m.id) {
             let t = model.session(m.id)?.title ?? m.title
-            out.append((m.id, t.isEmpty ? "Untitled" : t, m.modified))
+            out.append((m.id, t.isEmpty ? "Untitled" : t, m.modified, other(model.session(m.id)?.configDir ?? m.configDir)))
         }
         return out
     }
@@ -207,7 +209,7 @@ struct ProjectSection: View {
             let all = rows
             let shown = showAll ? all : Array(all.prefix(8))
             ForEach(shown, id: \.key) { row in
-                SessionRow(key: row.key, title: row.title, date: row.date).tag(row.key)
+                SessionRow(key: row.key, title: row.title, date: row.date, other: row.other).tag(row.key)
             }
             if all.count > 8 {
                 Button(showAll ? "Show less" : "Show \(all.count - 8) more") { showAll.toggle() }
@@ -219,6 +221,10 @@ struct ProjectSection: View {
                     .foregroundStyle(.secondary)
                 Text(project.name).lineLimit(1)
                 Spacer(minLength: 4)
+                if model.accounts.count > 1, project.accountDir != nil {
+                    let a = model.accountFor(dir: project.accountDir)
+                    AccountDisc(account: a).help("New chats use \(a.title)")
+                }
                 if hasActivity {
                     Circle().fill(Color.accentColor).frame(width: 6, height: 6)
                 }
@@ -249,12 +255,13 @@ struct SessionRow: View {
     let key: String
     let title: String
     let date: Date
+    var other: ClaudeAccount? = nil   // set when this chat ran on a different account than its project
 
     var body: some View {
         if let s = model.session(key) {
-            LiveRow(session: s, key: key, fallbackTitle: title, date: date)
+            LiveRow(session: s, key: key, fallbackTitle: title, date: date, other: other)
         } else {
-            RowContent(key: key, title: title, date: date) { EmptyView() }
+            RowContent(key: key, title: title, date: date, other: other) { EmptyView() }
         }
     }
 
@@ -274,6 +281,7 @@ struct RowContent<Indicator: View>: View {
     let key: String
     let title: String
     let date: Date
+    var other: ClaudeAccount? = nil
     @ViewBuilder var indicator: () -> Indicator
 
     var body: some View {
@@ -281,6 +289,7 @@ struct RowContent<Indicator: View>: View {
             indicator()
             Text(title).lineLimit(1).truncationMode(.tail)
             Spacer(minLength: 2)
+            if let other { AccountDisc(account: other, size: 13).help("Ran on \(other.title) · resumes there") }
             Text(SessionRow.relative(date)).font(.caption2).foregroundStyle(.tertiary)
         }
         .contextMenu {
@@ -300,9 +309,10 @@ struct LiveRow: View {
     let key: String
     let fallbackTitle: String
     let date: Date
+    var other: ClaudeAccount? = nil
 
     var body: some View {
-        RowContent(key: key, title: session.title.isEmpty ? fallbackTitle : session.title, date: date) { indicator }
+        RowContent(key: key, title: session.title.isEmpty ? fallbackTitle : session.title, date: date, other: other) { indicator }
     }
 
     @ViewBuilder private var indicator: some View {
@@ -337,5 +347,28 @@ struct SettingsView: View {
         }
         .padding(20)
         .frame(width: 460)
+    }
+}
+
+/// An account's colored initial (default account = neutral grey). Same palette as the web UI.
+struct AccountDisc: View {
+    let account: ClaudeAccount
+    var size: CGFloat = 15
+    @Environment(\.colorScheme) private var scheme
+
+    private static let light: [(bg: UInt32, fg: UInt32)] = [(0xE3E1D8, 0x5E5D59), (0x3F4FA8, 0xFFFFFF), (0x93407C, 0xFFFFFF), (0x80600E, 0xFFFFFF), (0x1D6E6A, 0xFFFFFF), (0x4D5F73, 0xFFFFFF)]
+    private static let dark: [(bg: UInt32, fg: UInt32)] = [(0x4A4A46, 0xE8E6DC), (0x9AA6EE, 0x141413), (0xDC93C6, 0x141413), (0xD9B45A, 0x141413), (0x63C3B8, 0x141413), (0xA5B6C8, 0x141413)]
+
+    var body: some View {
+        let pal = (scheme == .dark ? Self.dark : Self.light)[min(max(account.slot, 0), 5)]
+        Text(account.initial)
+            .font(.system(size: size * 0.6, weight: .semibold))
+            .foregroundStyle(Self.color(pal.fg))
+            .frame(width: size, height: size)
+            .background(Circle().fill(Self.color(pal.bg)))
+            .accessibilityLabel("Account \(account.name)")
+    }
+    private static func color(_ hex: UInt32) -> Color {
+        Color(red: Double((hex >> 16) & 0xFF) / 255, green: Double((hex >> 8) & 0xFF) / 255, blue: Double(hex & 0xFF) / 255)
     }
 }

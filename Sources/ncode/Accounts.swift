@@ -9,6 +9,9 @@ struct ClaudeAccount: Identifiable, Hashable {
     var org: String?
 
     var id: String { dir ?? "" }
+    /// Stable color slot for this account's initial (0 = neutral, for the default account).
+    var slot: Int = 0
+    var initial: String { String(name.prefix(1)).uppercased() }
 
     /// Short name: "default", or the folder name without the `.claude-` prefix ("personal", "om").
     var name: String {
@@ -45,14 +48,22 @@ enum Accounts {
             .filter { $0.hasPrefix(".claude-") }
             .map { "\(home)/\($0)" }
         dirs += extra
+        var slots = UserDefaults.standard.dictionary(forKey: "accountSlots") as? [String: Int] ?? [:]
         var seen = Set<String>()
         for d in dirs.sorted() where !seen.contains(d) {
             seen.insert(d)
             var isDir: ObjCBool = false
             guard fm.fileExists(atPath: d, isDirectory: &isDir), isDir.boolValue,
                   fm.fileExists(atPath: "\(d)/.claude.json") else { continue }
-            list.append(identity(ClaudeAccount(dir: d)))
+            var a = identity(ClaudeAccount(dir: d))
+            if slots[d] == nil {   // assign once, so adding an account never reshuffles colors
+                let used = Set(slots.values)
+                slots[d] = (1...5).first { !used.contains($0) } ?? (slots.count % 5 + 1)
+            }
+            a.slot = slots[d] ?? 1
+            list.append(a)
         }
+        UserDefaults.standard.set(slots, forKey: "accountSlots")
         return list
     }
 

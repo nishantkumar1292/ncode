@@ -111,6 +111,15 @@ final class AppModel: ObservableObject {
             let paths = self.extraPaths, added = self.addedAt, accounts = self.accounts
             DispatchQueue.global(qos: .userInitiated).async {
                 var list = ProjectStore.scan(paths: paths, addedAt: added, accounts: accounts)
+                let saved = UserDefaults.standard.dictionary(forKey: "projectAccount") as? [String: String] ?? [:]
+                var detected: [String: String] = [:]
+                for i in list.indices {
+                    if let s = saved[list[i].cwd] { list[i].accountDir = s.isEmpty ? nil : s }
+                    else {
+                        let d = Accounts.detect(for: list[i].cwd, among: accounts)?.dir
+                        list[i].accountDir = d; detected[list[i].cwd] = d ?? ""
+                    }
+                }
                 // Titles only for the sessions we will show.
                 for i in list.indices {
                     for j in list[i].sessions.indices.prefix(30) {
@@ -118,6 +127,7 @@ final class AppModel: ObservableObject {
                     }
                 }
                 DispatchQueue.main.async {
+                    if !detected.isEmpty { var map = self.projectAccounts; map.merge(detected) { old, _ in old }; self.projectAccounts = map }
                     self.projects = list
                     if self.expanded.isEmpty, let first = list.first { self.expanded.insert(first.cwd) }
                 }
@@ -196,7 +206,7 @@ final class AppModel: ObservableObject {
     /// already started, this opens a new chat on the new account.
     func setAccount(_ a: ClaudeAccount, forProject path: String) {
         var map = projectAccounts; map[path] = a.dir ?? ""; projectAccounts = map
-        objectWillChange.send()
+        if let i = projects.firstIndex(where: { $0.cwd == path }) { projects[i].accountDir = a.dir }
         if let k = selectedKey, let s = liveSessions[k], s.cwd == path {
             if !s.isLive && !s.hasTranscript { s.configDir = a.dir; bridge.open(session: s); bridge.toast("This chat will use \(a.title)") }
             else if s.configDir != a.dir { newChat(in: path); bridge.toast("New chat on \(a.title)") }
@@ -216,6 +226,7 @@ final class AppModel: ObservableObject {
         if !extra.contains(url.path) { extra.append(url.path) }
         UserDefaults.standard.set(extra, forKey: "extraConfigDirs")
         accounts = Accounts.discover(extra: extra)
+        bridge.sendConfig()
         if !accounts.contains(where: { $0.dir == url.path }) { bridge.toast("No Claude config (.claude.json) found in that folder") }
     }
 

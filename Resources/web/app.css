@@ -294,6 +294,21 @@ kbd { font: 11px var(--font-mono); padding: 1px 5px; border: 1px solid var(--bor
 @keyframes ring-breathe { 0%, 100% { transform: scale(.75); opacity: .55; } 50% { transform: scale(1.2); opacity: 1; } }
 @media (prefers-reduced-motion: reduce) { .ring.is-working .core { animation: none; } }
 
+/* account chip + colored initials (default account = neutral) */
+.acct { gap: 6px; padding: 4px 8px 4px 5px; }
+.acct-disc { width: 16px; height: 16px; border-radius: 50%; display: inline-grid; place-items: center; font: 600 9.5px/1 var(--font-ui); flex: none; }
+.acct-disc.s0 { background: #e3e1d8; color: #5e5d59; } .acct-disc.s1 { background: #3f4fa8; color: #fff; } .acct-disc.s2 { background: #93407c; color: #fff; }
+.acct-disc.s3 { background: #80600e; color: #fff; } .acct-disc.s4 { background: #1d6e6a; color: #fff; } .acct-disc.s5 { background: #4d5f73; color: #fff; }
+@media (prefers-color-scheme: dark) {
+  .acct-disc.s0 { background: #4a4a46; color: #e8e6dc; } .acct-disc.s1 { background: #9aa6ee; color: #141413; } .acct-disc.s2 { background: #dc93c6; color: #141413; }
+  .acct-disc.s3 { background: #d9b45a; color: #141413; } .acct-disc.s4 { background: #63c3b8; color: #141413; } .acct-disc.s5 { background: #a5b6c8; color: #141413; }
+}
+.menu .m-item > .acct-disc { margin-top: 2px; }
+.menu .m-right { margin-left: auto; padding-left: 14px; align-self: center; font-size: 11.5px; color: var(--text-3); white-space: nowrap; }
+.menu .m-item:hover .m-right.go { color: var(--accent); }
+.menu .m-note { padding: 6px 10px 4px; max-width: 320px; font-size: 11.5px; line-height: 1.45; color: var(--text-3); }
+.acct-line { display: inline-flex; align-items: center; gap: 6px; margin-top: 10px; font-size: 12.5px; color: var(--text-2); }
+
 /* details card above the ring */
 .glance { position: absolute; bottom: calc(100% + 10px); width: 300px; background: var(--surface); border: 1px solid var(--border-strong); border-radius: 14px; box-shadow: var(--shadow), 0 10px 30px rgba(0,0,0,.06); padding: 11px 14px 12px; z-index: 25; font-size: 12.5px; color: var(--text-2); text-align: left; }
 .glance::after { content: ""; position: absolute; bottom: -6px; right: var(--caret, 20px); width: 10px; height: 10px; background: var(--surface); border-right: 1px solid var(--border-strong); border-bottom: 1px solid var(--border-strong); transform: rotate(45deg); }

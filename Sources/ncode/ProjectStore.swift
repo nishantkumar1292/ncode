@@ -16,6 +16,7 @@ struct Project: Identifiable, Hashable {
     var sessions: [SessionMeta]
     var lastActivity: Date
     var pinned: Bool
+    var accountDir: String? = nil   // account new chats use (nil = default)
 }
 
 /// Reads Claude Code's own on-disk session store (~/.claude/projects), so the sidebar

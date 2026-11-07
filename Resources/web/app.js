@@ -62,6 +62,9 @@ const sessions = new Map();
 let current = null;
 let config = { home: '' };
 let lastModels = store.get('models', null);
+let accounts = [];                       // Claude config dirs, from Swift
+const plans = store.get('plans', {});    // config dir → plan name, learned from each account's first chat
+let carryDraft = null;                   // draft moving to a new chat after an account switch
 const limits = {};            // usage windows from rate_limit_event, shared by all chats
 const dismissed = {};         // heads-up rows hidden until their number climbs 5 more points
 
@@ -119,6 +122,10 @@ class Session {
     if (this.hasContent) { this.hello.remove(); return; }
     const name = (this.cwd || '').split('/').filter(Boolean).pop() || 'this project';
     this.hello.replaceChildren(h('h2', { text: greeting() }), h('p', { text: `Working in ${name} · ${this.cwd.replace(config.home, '~')}` }));
+    if (accounts.length > 1 && this.account) {
+      const a = this.account, plan = plans[a.dir || ''];
+      this.hello.append(h('div.acct-line', null, h('span.acct-disc.s' + (a.slot || 0), { text: a.initial || 'D' }), `on ${a.name}${a.email ? ' · ' + a.email : ''}${plan ? ' · ' + plan : ''}`));
+    }
   }
 
   append(el, parent) {
@@ -182,12 +189,17 @@ function route(m, touched) {
   switch (m.t) {
     case 'config':
       config = m; window.__home = m.home || '';
+      accounts = m.accounts || accounts;
+      if (current) { updateChrome(); current.setHello(); }
       return;
     case 'open': {
       const s = getSession(m.k);
       s.cwd = m.cwd; s.title = m.title; s.resumable = m.resumable;
+      if (m.account) s.account = m.account;
+      if (m.projectAccount != null) s.projectAccount = m.projectAccount;
       if (!m.live && s.live) s.live = false;
       s.setHello();
+      if (s === current) updateChrome();
       return;
     }
     case 'select': return select(m.k);
@@ -236,6 +248,10 @@ function select(k) {
   if (current) {
     current.el.hidden = false;
     current.setHello();
+    if (carryDraft && !current.hasContent && !current.draft.text && !current.draft.atts.length) {
+      current.draft.text = carryDraft.text; current.draft.atts = carryDraft.atts;
+    }
+    carryDraft = null;
     loadDraft(current);
     renderDock();
     updateChrome();
@@ -1046,6 +1062,8 @@ function onControlResponse(S, o) {
       if (r.response.models) { lastModels = r.response.models; store.set('models', lastModels); }
       if (S === current && modelMenu && !$('#menu').hidden) openModelMenu(modelMenu.anchor, modelMenu.older);
       if (r.response.current_permission_mode) S.mode = r.response.current_permission_mode;
+      const plan = r.response.account?.subscriptionType;
+      if (plan && S.account) { plans[S.account.dir || ''] = plan; store.set('plans', plans); }
       S.live = true;
       for (const pr of r.response.pending_permission_requests || []) onControlRequest(S, pr);
     } else if (r.subtype === 'error') {
@@ -1531,7 +1549,11 @@ function openMenu(anchor, items, dir, alignRight) {
     if (it.sep) return h('div.m-sep');
     if (it.head) return h('div.m-head', { text: it.head });
     if (it.seg) return h('div.seg', null, it.seg.map((v) => h('button' + (it.value === v ? '.on' : ''), { text: v, onclick: () => { it.action(v); closeMenu(); } })));
-    return h('div.m-item', { onclick: () => { closeMenu(); it.action(); } }, h('span.check', { text: it.checked ? '✓' : '' }), h('div', null, h('div.m-label', { text: it.label }), it.desc ? h('div.m-desc', { text: it.desc }) : null));
+    if (it.note) return h('div.m-note', { text: it.note });
+    return h('div.m-item', { onclick: () => { closeMenu(); it.action(); }, role: 'menuitem' }, h('span.check', { text: it.checked ? '✓' : '' }),
+      it.disc ? h('span.acct-disc.s' + it.disc.slot, { text: it.disc.initial }) : null,
+      h('div', null, h('div.m-label', { text: it.label }), it.desc ? h('div.m-desc', { text: it.desc }) : null),
+      it.right ? h('span.m-right' + (it.go ? '.go' : ''), { text: it.right }) : null);
   }));
   menu.hidden = false;
   const r = anchor.getBoundingClientRect();
@@ -1626,9 +1648,51 @@ function updateChrome() {
   updatePlaceholder();
 
   renderRing(S);
+  renderAccountChip(S);
   renderHeadsUp(S);
   if (glance.open) renderGlance(S);
 }
+
+// ---------------------------------------------------------------- account chip (which Claude config dir this chat runs on)
+const chatStarted = (S) => S.live || S.resumable || S.hasContent;
+function renderAccountChip(S) {
+  const chip = $('#acct');
+  const a = S.account;
+  chip.hidden = accounts.length < 2 || !a;
+  if (chip.hidden) return;
+  chip.replaceChildren(h('span.acct-disc.s' + (a.slot || 0), { text: a.initial || 'D' }), a.name);
+  const plan = plans[a.dir || ''];
+  chip.title = [a.email, plan, a.org].filter(Boolean).join(' · ');
+  chip.setAttribute('aria-label', `Account: ${a.name}${a.email ? ', ' + a.email : ''}${plan ? ', ' + plan : ''}. Switch account`);
+}
+function openAccountMenu(anchor) {
+  const S = current; if (!S || !S.account) return;
+  const project = (S.cwd.split('/').filter(Boolean).pop()) || 'this project';
+  const started = chatStarted(S);
+  const items = [{ head: `Account for ${project}` }];
+  const seenEmail = {};
+  for (const a of accounts) {
+    const plan = plans[a.dir || ''];
+    const same = a.email && seenEmail[a.email];
+    if (a.email && !seenEmail[a.email]) seenEmail[a.email] = a.name;
+    const here = (a.dir || '') === (S.account.dir || '');
+    items.push({
+      label: a.name, disc: { slot: a.slot || 0, initial: a.initial },
+      desc: [a.email, same ? `same login as ${same}` : plan].filter(Boolean).join(' · ') || 'not logged in',
+      checked: here, right: here ? 'this chat' : started ? 'New chat →' : 'Switch', go: !here,
+      action: () => {
+        if (here) return;
+        if (started) carryDraft = { text: input.value, atts: S.draft.atts.slice() };
+        setTimeout(() => { carryDraft = null; }, 4000);
+        native('setAccount', { k: S.k, dir: a.dir || '' });
+      },
+    });
+  }
+  items.push({ note: started ? `This chat stays on ${S.account.name}. Picking another account opens a new chat in ${project} on it, and your draft comes along.` : 'Nothing sent yet, so this chat switches.' });
+  items.push({ sep: true }, { label: 'Add account folder…', desc: 'A folder you point CLAUDE_CONFIG_DIR at', action: () => native('addAccountFolder') });
+  openMenu(anchor, items, 'up', true);
+}
+$('#acct').addEventListener('click', (e) => openAccountMenu(e.currentTarget));
 
 // ---------------------------------------------------------------- session ring, details card, heads-up tab
 const RING_C = 2 * Math.PI * 7.5;
@@ -1828,7 +1892,8 @@ function renderActivity() {
     ['Session', S.sys?.session_id || S.k],
     ['Folder', S.cwd.replace(config.home, '~')],
     ['Version', S.init?.claude_code_version || S.sys?.claude_code_version || ''],
-    ['Account', acct ? `${acct.subscriptionType || ''} ${acct.organization ? '· ' + acct.organization : ''}`.trim() : ''],
+    ['Account', acct ? [acct.email, acct.subscriptionType, acct.organization].filter(Boolean).join(' · ') : (S.account?.email || '')],
+    ['Config', S.account ? (S.account.dir ? S.account.dir.replace(config.home, '~') : 'default (~/.claude)') : ''],
     ['Cost', S.cost ? '$' + S.cost.toFixed(4) : ''],
     ['Status line', S.usageText ? S.usageText.replace(/\s+/g, ' ') : ''],
   ].filter(([, v]) => v);
