@@ -81,6 +81,11 @@ class Session {
     this.model = null;
     this.mode = store.get('defaultMode', 'default');
     this.opts = {};              // launch options for the first start
+    this.applied = null;         // { model, effort } the CLI says it is using (get_settings); effort null = model has none
+    this.effortSent = '';        // effort level the running CLI was given (--effort or apply_flag_settings)
+    this.defaults = {};          // resolved model → the CLI's default effort for it in this process
+    this.modelChanged = false;   // set_model ran in this process, so its defaults no longer match a fresh launch
+    this.liveWaiters = [];
     this.cur = {};               // per-parent streaming message: { id, blocks[] }
     this.msgBlocks = new Map();  // message id → block records
     this.tools = new Map();      // tool_use_id → tool record
@@ -146,9 +151,23 @@ class Session {
   // -- protocol output
   write(obj, opts) {
     const line = JSON.stringify(obj);
+    if (!opts && !this.live && !this.warming) {
+      // This write starts the CLI, so the launch options take effect.
+      opts = this.launchOpts();
+      this.warming = true; this.effortSent = opts.effort;
+      return native('write', { k: this.k, line, opts }).then((ok) => { if (!ok) this.warming = false; return ok; });
+    }
     return native('write', { k: this.k, line, opts: opts || (this.live ? undefined : this.launchOpts()) });
   }
-  launchOpts() { return { model: this.opts.model || '', permissionMode: this.mode, effort: this.opts.effort || '' }; }
+  launchOpts() {
+    // Before the first message a picked effort stays in ncode, so the chat can still go back to the
+    // default; it's sent along with that message (syncEffort).
+    return { model: this.opts.model || '', permissionMode: this.mode, effort: effortHeld(this) ? '' : effortPick(this) };
+  }
+  whenLive() {
+    if (this.live) return Promise.resolve(true);
+    return new Promise((res) => { this.liveWaiters.push(res); setTimeout(() => res(this.live), 20000); });
+  }
   request(sub, extra = {}) {
     if (!this.live) return Promise.resolve(null);
     const id = 'ui-' + uid();
@@ -557,6 +576,8 @@ function onResult(S, o) {
 function onExit(S, o) {
   const wasBusy = S.busy;
   S.live = false; S.warming = false; setBusy(S, false);
+  for (const res of S.liveWaiters.splice(0)) res(false);
+  S.applied = null; S.effortSent = ''; S.defaults = {}; S.modelChanged = false;
   for (const q of S.sentQueue) q.el.classList.remove('queued');
   S.sentQueue = [];
   for (const id of [...S.pending.keys()]) removePending(S, id);
@@ -1065,6 +1086,8 @@ function onControlResponse(S, o) {
       const plan = r.response.account?.subscriptionType;
       if (plan && S.account) { plans[S.account.dir || ''] = plan; store.set('plans', plans); }
       S.live = true;
+      for (const res of S.liveWaiters.splice(0)) res(true);
+      refreshEffort(S).then(() => syncEffort(S));   // learn the default first, then pass on a level picked while starting
       for (const pr of r.response.pending_permission_requests || []) onControlRequest(S, pr);
     } else if (r.subtype === 'error') {
       S.append(notice('Failed to initialize Claude Code: ' + r.error, 'error'));
@@ -1401,7 +1424,9 @@ function warmUp(S) {
   // Start the CLI as soon as the user starts typing so commands/models are ready.
   if (S.live || S.warming) return;
   S.warming = true;
-  native('start', { k: S.k, opts: S.launchOpts() }).then((ok) => { if (!ok) S.warming = false; });
+  const opts = S.launchOpts();
+  S.effortSent = opts.effort;
+  native('start', { k: S.k, opts }).then((ok) => { if (!ok) S.warming = false; });
 }
 
 function interrupt(S) {
@@ -1448,6 +1473,9 @@ async function submit() {
   renderAtts(); autosize(); updatePlaceholder();
   setBusy(S, true); S.verb = 'Thinking';
   S.scroll(true);
+  // Chained so a second quick message can't overtake the first while its effort is being sent.
+  const gate = S.sendGate = (S.sendGate || Promise.resolve()).then(() => syncEffort(S)).catch((e) => console.error('effort', e));
+  await gate;
   const ok = await S.write(message);
   if (!ok) { setBusy(S, false); bubble.append(notice('Not sent: Claude Code is not available.', 'error')); }
   if (S.title === 'New chat' && text && !isCmd) native('title', { k: S.k, title: text.slice(0, 60) });
@@ -1487,14 +1515,99 @@ async function setModel(S, value) {
   S.opts.model = value;
   if (S.live) {
     const r = await S.request('set_model', { model: value });
-    if (r) { S.model = value; toast('Model set to ' + modelName(S, value)); }
+    if (r) { S.model = value; S.modelChanged = true; toast('Model set to ' + modelName(S, value)); }
+    refreshEffort(S);   // the effort can change with the model
   } else S.model = value;
   updateChrome();
 }
 async function setEffort(S, level) {
-  S.opts.effort = level;
-  if (S.live) { const r = await S.request('apply_flag_settings', { settings: { effortLevel: level } }); if (r) toast('Effort: ' + level); }
+  S.opts.effort = level;   // '' = back to the default (offered only while nothing has been sent)
+  if (S.live && level && !effortHeld(S)) {
+    const prev = S.effortSent;
+    S.effortSent = level;
+    const r = await S.request('apply_flag_settings', { settings: { effortLevel: level } });
+    if (r) toast('Effort: ' + level); else S.effortSent = prev;
+    refreshEffort(S);
+  } else toast(level ? 'Effort: ' + level : 'Effort: back to the default');
   updateChrome();
+}
+
+// ---- effort: which level the CLI is using, and whether it is the default or picked for this chat
+const EFFORT_LEVELS = ['low', 'medium', 'high', 'xhigh', 'max'];
+const EFFORT_TIPS = { low: 'Quick replies, light thinking', medium: 'Balanced for everyday work', high: 'Thinks longer on harder tasks', xhigh: 'Extra thinking for tricky problems', max: 'Deepest thinking, slowest' };
+const effortCache = store.get('effortDefaults', {});   // "account dir|model" → the effort a new chat starts at
+const effortKey = (S) => (S.account?.dir || '') + '|' + (S.opts.model || 'default');
+/** Levels the model takes. The placeholder list (before the CLI answers) has no flags, so assume all. */
+const effortLevels = (m) => m.supportsEffort ? (m.supportedEffortLevels || EFFORT_LEVELS) : m.resolvedModel ? [] : EFFORT_LEVELS;
+/** Nothing sent yet: a picked level is only held by ncode, so going back to the default still works. */
+const effortHeld = (S) => !S.hasContent && !S.resumable;
+/** The level picked for this chat, if the current model takes it. */
+function effortPick(S) { const p = S.opts.effort || ''; return p && effortLevels(currentModel(S)).includes(p) ? p : ''; }
+function currentModel(S) {
+  const list = modelsFor(S);
+  let cur = S.opts.model ? list.find((m) => m.value === S.opts.model) : null;
+  if (!cur && S.model) cur = list.find((m) => m.value === S.model) || list.find((m) => m.resolvedModel === S.model && m.value !== 'default');
+  return cur || list.find((m) => m.value === 'default') || list[0];
+}
+/** Ask the CLI which effort it's using (get_settings → applied). While it has no picked level, that's the default. */
+async function refreshEffort(S) {
+  if (!S.live) return;
+  S.effortPending = true;
+  const r = await S.request('get_settings');
+  S.effortPending = false;
+  const a = r?.applied;
+  if (a && 'effort' in a) {
+    S.applied = { model: a.model, effort: a.effort ?? null };
+    if (!S.effortSent) {
+      S.defaults[a.model] = S.applied.effort;
+      // Remember what a fresh chat starts at, to show before the CLI is running.
+      if (!S.modelChanged && S.applied.effort && a.model === currentModel(S).resolvedModel) { effortCache[effortKey(S)] = S.applied.effort; store.set('effortDefaults', effortCache); }
+    }
+  }
+  if (S === current) { updateChrome(); if (modelMenu && !$('#menu').hidden) openModelMenu(modelMenu.anchor, modelMenu.older); }
+}
+/** Give the CLI the level picked in ncode if it doesn't have it yet (a held pick, or one made while it was starting). */
+async function syncEffort(S) {
+  const want = effortPick(S);
+  if (!want || want === S.effortSent || effortHeld(S)) return;
+  if (!S.live && !S.warming) return;   // the next write starts the CLI with --effort
+  if (!(await S.whenLive()) || want === S.effortSent) return;
+  const prev = S.effortSent;
+  S.effortSent = want;
+  if (await S.request('apply_flag_settings', { settings: { effortLevel: want } })) await refreshEffort(S);
+  else S.effortSent = prev;
+}
+function effortState(S) {
+  const m = currentModel(S), name = modelName(S, m.value);
+  const known = S.applied && (!m.resolvedModel || S.applied.model === m.resolvedModel);
+  const applied = known ? S.applied.effort : undefined;
+  const levels = applied === null ? [] : effortLevels(m);
+  if (!levels.length) return { levels, name };
+  const pick = effortPick(S), held = effortHeld(S);
+  // The default: what the CLI reports while it has no pick, else what it said earlier, else what a new chat started at last time.
+  let dflt = !S.effortSent && applied !== undefined ? applied : S.defaults[m.resolvedModel];
+  if (dflt == null && !S.modelChanged) dflt = effortCache[effortKey(S)];
+  const inUse = applied !== undefined && !(pick && held) ? applied : pick || dflt;
+  const checking = applied === undefined && !pick && ((S.warming && !S.live) || !!S.effortPending);
+  return { levels, name, pick, held, dflt, inUse, checking };
+}
+function effortNote(e) {
+  if (e.checking) return 'Checking your settings…';
+  if (!e.pick) return e.inUse ? `Using ${e.inUse}, the default for ${e.name}.` : null;
+  if (!e.dflt || e.dflt === e.inUse) return 'Picked for this chat.';
+  return e.held ? `Picked for this chat. Click ${e.dflt} to undo.` : `Picked for this chat. The default is ${e.dflt}.`;
+}
+function effortItems(S) {
+  const e = effortState(S);
+  if (!e.levels.length) return [{ head: 'Effort' }, { note: `${e.name} has no effort setting.` }];
+  const items = [{ head: 'Effort' }, {
+    seg: e.levels, value: e.inUse, dflt: e.dflt, checking: e.checking, tips: EFFORT_TIPS,
+    // Before the first message, clicking the default drops the pick; after that it's a pick like any other.
+    action: (lvl) => { if (lvl !== e.inUse) setEffort(S, e.pick && e.held && lvl === e.dflt ? '' : lvl); },
+  }];
+  const note = effortNote(e);
+  if (note) items.push({ note });
+  return items;
 }
 // Placeholder until the CLI reports its real list (opening the menu starts the session to fetch it).
 const FALLBACK_MODELS = ['default', 'opus', 'fable', 'sonnet', 'haiku'].map((v) => ({ value: v, displayName: v === 'default' ? 'Default' : v[0].toUpperCase() + v.slice(1) }));
@@ -1517,10 +1630,7 @@ let modelMenu = null;   // { anchor, older } while the model menu is open
 function openModelMenu(anchor, older) {
   const S = current; if (!S) return;
   if (!S.init && !S.live) warmUp(S);   // fetch the CLI's real model list; no message is sent
-  const list = modelsFor(S);
-  let cur = S.opts.model ? list.find((m) => m.value === S.opts.model) : null;
-  if (!cur && S.model) cur = list.find((m) => m.value === S.model) || list.find((m) => m.resolvedModel === S.model && m.value !== 'default');
-  if (!cur) cur = list.find((m) => m.value === 'default') || list[0];
+  const list = modelsFor(S), cur = currentModel(S);
   const row = (m) => ({ label: m.displayName, desc: m.description, checked: m === cur, action: () => setModel(S, m.value) });
   const latest = list.filter(isAlias), pinned = list.filter((m) => !isAlias(m));
   const items = latest.map(row);
@@ -1530,8 +1640,7 @@ function openModelMenu(anchor, older) {
     if (older || pinned.includes(cur)) items.push({ head: 'Older models' }, ...pinned.map(row));
     else items.push({ label: 'Older models…', desc: pinned.map((m) => m.displayName).slice(0, 4).join(', ') + (pinned.length > 4 ? '…' : ''), action: () => openModelMenu(anchor, true) });
   }
-  const levels = cur?.supportedEffortLevels || ['low', 'medium', 'high', 'xhigh', 'max'];
-  items.push({ sep: true }, { head: 'Effort' }, { seg: levels, value: S.opts.effort, action: (lvl) => setEffort(S, lvl) });
+  items.push({ sep: true }, ...effortItems(S));
   modelMenu = { anchor, older };
   openMenu(anchor, items, 'up', true);
 }
@@ -1548,7 +1657,11 @@ function openMenu(anchor, items, dir, alignRight) {
   menu.replaceChildren(...items.map((it) => {
     if (it.sep) return h('div.m-sep');
     if (it.head) return h('div.m-head', { text: it.head });
-    if (it.seg) return h('div.seg', null, it.seg.map((v) => h('button' + (it.value === v ? '.on' : ''), { text: v, onclick: () => { it.action(v); closeMenu(); } })));
+    if (it.seg) return h('div.seg' + (it.dflt ? '.has-dflt' : '') + (it.checking ? '.checking' : ''), null, it.seg.map((v) =>
+      h('button' + (it.value === v ? '.on' : '') + (it.dflt === v ? '.dflt' : ''), {
+        text: v, title: it.tips?.[v] ? it.tips[v] + (it.dflt === v ? ' · your default' : '') : null,
+        onclick: () => { it.action(v); closeMenu(); },
+      })));
     if (it.note) return h('div.m-note', { text: it.note });
     return h('div.m-item', { onclick: () => { closeMenu(); it.action(); }, role: 'menuitem' }, h('span.check', { text: it.checked ? '✓' : '' }),
       it.disc ? h('span.acct-disc.s' + it.disc.slot, { text: it.disc.initial }) : null,
@@ -1642,8 +1755,11 @@ function updateChrome() {
   const modeBtn = $('#mode');
   modeBtn.dataset.mode = S.mode;
   modeBtn.replaceChildren(h('span.chip-dot'), mode.label);
-  const effort = S.opts.effort ? ` · ${S.opts.effort}` : '';
-  $('#model').textContent = modelName(S, S.opts.model || S.model) + effort + '  ▾';
+  // The effort shows even when nothing was picked: muted when it's the default.
+  const e = effortState(S), chip = $('#model');
+  const eff = e.inUse ? h('span.eff' + (e.pick ? '' : '.dflt'), { text: ' · ' + e.inUse }) : null;
+  chip.replaceChildren(...[modelName(S, S.opts.model || S.model), eff, '  ▾'].filter(Boolean));
+  chip.title = !e.inUse ? 'Model and effort' : e.pick ? `Effort ${e.inUse}, picked for this chat` : `Effort ${e.inUse}, the default for ${e.name}`;
   updateSendButton();
   updatePlaceholder();
 
