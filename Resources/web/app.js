@@ -62,6 +62,8 @@ const sessions = new Map();
 let current = null;
 let config = { home: '' };
 let lastModels = store.get('models', null);
+const limits = {};            // usage windows from rate_limit_event, shared by all chats
+const dismissed = {};         // heads-up rows hidden until their number climbs 5 more points
 
 class Session {
   constructor(k) {
@@ -240,7 +242,8 @@ function select(k) {
     requestAnimationFrame(() => { current.scroll(true); $('#input').focus(); });
   } else {
     $('#dock').replaceChildren();
-    $('#status').replaceChildren();
+    $('#headsup').hidden = true;
+    closeGlance();
   }
   renderActivity();
 }
@@ -266,8 +269,12 @@ function handleEvent(S, o, fromHistory) {
       if (S === current) updatePlaceholder();
       return;
     case 'rate_limit_event': {
+      // Account-wide usage windows (5-hour, weekly). Fractions 0–1, reset times in epoch seconds.
       const info = o.rate_limit_info || {};
-      if (info.status && info.status !== 'allowed') S.append(notice(`Rate limit: ${info.status}${info.resetsAt ? ' · resets ' + new Date(info.resetsAt * 1000).toLocaleTimeString() : ''}`, 'error'));
+      for (const [k, w] of Object.entries(info.unifiedWindows || {})) limits[k] = { u: w.utilization, resetsAt: w.resetsAt, status: w.status };
+      if (info.rateLimitType && info.utilization != null && !(info.unifiedWindows || {})[info.rateLimitType]) limits[info.rateLimitType] = { u: info.utilization, resetsAt: info.resetsAt, status: info.status };
+      limits.status = info.status; limits.resetsAt = info.resetsAt; limits.at = Date.now();
+      for (const x of sessions.values()) if (x === current) updateChrome();
       return;
     }
     case 'auth_status':
@@ -1076,7 +1083,7 @@ function onControlRequest(S, o) {
       S.respondError(o.request_id, 'Unsupported request: ' + req.subtype);
       return;
   }
-  if (S === current) renderDock();
+  if (S === current) { renderDock(); updateChrome(); }
 }
 
 function removePending(S, id) {
@@ -1094,6 +1101,7 @@ function answerPermission(S, p, response) {
   if (t && !t.agent) { t.status = response.behavior === 'allow' ? 'running' : 'denied'; if (response.behavior === 'deny') t.denyMsg = response.message; renderTool(t); }
   S.pending.delete(p.id);
   renderDock();
+  updateChrome();
   $('#input').focus();
 }
 
@@ -1617,19 +1625,130 @@ function updateChrome() {
   updateSendButton();
   updatePlaceholder();
 
-  const left = h('div.left');
-  left.append(h('span.clickable', { text: S.cwd.replace(config.home, '~'), title: 'Reveal in Finder', onclick: () => native('openPath', { k: S.k, path: S.cwd, reveal: true }) }));
-  if (!S.live && S.resumable) left.append(h('span', { text: 'resumes on send' }));
-  else if (S.live) left.append(h('span', { text: '● live', style: 'color:var(--ok)' }));
-  const running = [...S.tasks.values()].filter((t) => t.status === 'running').length;
-  if (running) left.append(h('span.clickable', { text: `${running} task${running > 1 ? 's' : ''} running`, onclick: toggleActivity }));
-  const right = h('div.right');
-  if (S.usageText) right.append(h('span', { text: S.usageText.replace(/\s+/g, ' ') }));
-  if (S.ctx?.percentage != null) {
-    const pct = Math.round(S.ctx.percentage);
-    right.append(h('span.clickable', { title: `${fmtTok(S.ctx.totalTokens)} / ${fmtTok(S.ctx.maxTokens)} tokens`, onclick: toggleActivity }, h('span.ctx-bar' + (pct > 85 ? '.crit' : pct > 65 ? '.hot' : ''), null, h('i', { style: `width:${Math.min(100, pct)}%` })), `${pct}% context`));
+  renderRing(S);
+  renderHeadsUp(S);
+  if (glance.open) renderGlance(S);
+}
+
+// ---------------------------------------------------------------- session ring, details card, heads-up tab
+const RING_C = 2 * Math.PI * 7.5;
+const ctxPct = (S) => S.ctx?.percentage != null ? Math.round(S.ctx.percentage) : null;
+const tone = (pct, warnAt, critAt) => pct == null ? '' : pct >= critAt ? 'crit' : pct >= warnAt ? 'hot' : '';
+function sessionState(S) {
+  if (!S.live) return S.resumable ? { cls: 'off', text: 'Not running · continues this chat when you send' } : { cls: 'off', text: 'Starts when you send a message' };
+  if (S.pending.size) return { cls: 'waiting', text: 'Waiting for your approval' };
+  if (S.busy) return { cls: 'working', text: S.verb ? S.verb + '…' : 'Working…' };
+  return { cls: 'live', text: 'Session live' };
+}
+function renderRing(S) {
+  const ring = $('#ring');
+  const pct = ctxPct(S), st = sessionState(S);
+  const t = tone(pct, 70, 85);
+  ring.className = 'ring' + (st.cls === 'off' ? ' is-off' : st.cls === 'working' ? ' is-working' : st.cls === 'waiting' ? ' is-waiting' : '') + (t ? ' ' + t : '') + (glance.open ? ' is-open' : '');
+  const dash = pct == null ? 0 : Math.max(pct > 0 ? 1.2 : 0, (Math.min(100, pct) / 100) * RING_C);
+  ring.innerHTML = `<svg viewBox="0 0 20 20" aria-hidden="true"><circle class="track" cx="10" cy="10" r="7.5"/><circle class="arc" cx="10" cy="10" r="7.5" stroke-dasharray="${dash.toFixed(1)} ${RING_C.toFixed(1)}" transform="rotate(-90 10 10)"/><circle class="core" cx="10" cy="10" r="2.4"/></svg>` + (pct != null && pct >= 70 ? `<span class="pct">${pct}%</span>` : '');
+  ring.setAttribute('aria-label', `${st.text}.${pct != null ? ` Context ${pct}% used.` : ''} Click for details.`);
+  ring.title = '';
+}
+function resetIn(epochSec, weekly) {
+  if (!epochSec) return '';
+  const ms = epochSec * 1000 - Date.now();
+  if (ms <= 0) return 'resetting now';
+  if (weekly && ms > 864e5) return 'resets ' + new Date(epochSec * 1000).toLocaleString(undefined, { weekday: 'short', hour: 'numeric', minute: '2-digit' });
+  const m = Math.round(ms / 60000);
+  return 'resets in ' + (m >= 60 ? `${Math.floor(m / 60)}h ${m % 60}m` : `${m}m`);
+}
+
+const glance = { open: false, pinned: false, timer: 0 };
+function openGlance(pinned) {
+  const S = current; if (!S) return;
+  clearTimeout(glance.timer);
+  glance.open = true; glance.pinned = glance.pinned || !!pinned;
+  const el = $('#glance');
+  el.hidden = false;
+  renderGlance(S);
+  const comp = $('#composer').getBoundingClientRect(), r = $('#ring').getBoundingClientRect();
+  const right = Math.max(8, comp.right - r.right - 40);
+  el.style.right = right + 'px';
+  el.style.setProperty('--caret', Math.max(12, comp.right - right - (r.left + r.width / 2) - 5) + 'px');
+  $('#ring').classList.add('is-open');
+}
+function closeGlance() {
+  clearTimeout(glance.timer);
+  glance.open = false; glance.pinned = false;
+  $('#glance').hidden = true;
+  $('#ring').classList.remove('is-open');
+}
+function renderGlance(S) {
+  const st = sessionState(S);
+  const kids = [h('div.g-head', null, h('span.g-dot.' + st.cls), h('span', { text: st.text }),
+    h('button.g-more', { onclick: () => { closeGlance(); toggleActivity(); } }, 'Details', h('kbd', { text: '⌘J' })))];
+  // Context
+  const ctx = h('div.g-sec');
+  const pct = ctxPct(S);
+  if (pct != null) {
+    const t = tone(pct, 70, 85);
+    ctx.append(h('div.g-row', null, h('span.g-label', { text: 'Context' }), h('span.g-val', { text: `${fmtTok(S.ctx.totalTokens)} of ${fmtTok(S.ctx.maxTokens)} tokens` }), h('span.g-pct' + (t ? '.' + t : ''), { text: pct + '%' })));
+    const bar = h('div.g-bar', null, h('i' + (t ? '.' + t : ''), { style: `width:${Math.min(100, pct)}%` }));
+    const thr = S.ctx.autoCompactThreshold && S.ctx.maxTokens ? Math.round((S.ctx.autoCompactThreshold / S.ctx.maxTokens) * 100) : null;
+    if (thr && S.ctx.isAutoCompactEnabled !== false) bar.append(h('span.tick', { style: `left:${thr}%`, title: 'Auto-compact' }));
+    ctx.append(bar);
+    ctx.append(h('div.g-sub', null, h('span', { text: thr && S.ctx.isAutoCompactEnabled !== false ? `Older messages get summarized at ${thr}%` : 'Auto-compact is off' }),
+      S.live && pct >= 40 ? h('button.hu-btn', { text: 'Compact now', onclick: () => { closeGlance(); input.value = '/compact'; submit(); } }) : null));
+  } else ctx.append(h('div.g-row', null, h('span.g-label', { text: 'Context' }), h('span.g-val', { text: S.live ? 'updates after the next reply' : 'shows once the chat is running' })));
+  kids.push(ctx);
+  // Usage limits (account-wide)
+  const use = h('div.g-sec');
+  const wins = [['five_hour', '5-hour limit', false], ['seven_day', 'Weekly limit', true]].filter(([k]) => limits[k]?.u != null);
+  if (wins.length) {
+    for (const [k, label, weekly] of wins) {
+      const p = Math.round(limits[k].u * 100), t = tone(p, 80, 90);
+      use.append(h('div.g-row', null, h('span.g-label', { text: label }), h('span.g-val', { text: resetIn(limits[k].resetsAt, weekly) }), h('span.g-pct' + (t ? '.' + t : ''), { text: p + '%' })));
+      use.append(h('div.g-bar', null, h('i' + (t ? '.' + t : ''), { style: `width:${Math.min(100, p)}%` })));
+    }
+  } else use.append(h('div.g-row', null, h('span.g-label', { text: 'Usage limits' }), h('span.g-val', { text: 'update with your next message' })));
+  kids.push(use);
+  // Cost only matters on pay-as-you-go accounts.
+  if (S.cost && !S.init?.account?.subscriptionType) kids.push(h('div.g-sec', null, h('div.g-row', null, h('span.g-label', { text: 'This chat' }), h('span.g-pct', { text: '$' + S.cost.toFixed(2) }))));
+  $('#glance').replaceChildren(...kids);
+}
+const ringEl = $('#ring'), glanceEl = $('#glance');
+ringEl.addEventListener('click', () => { if (glance.open && glance.pinned) closeGlance(); else openGlance(true); });
+ringEl.addEventListener('mouseenter', () => { clearTimeout(glance.timer); if (!glance.open) glance.timer = setTimeout(() => openGlance(false), 250); });
+for (const el of [ringEl, glanceEl]) {
+  el.addEventListener('mouseleave', () => { clearTimeout(glance.timer); if (!glance.pinned) glance.timer = setTimeout(closeGlance, 220); });
+  el.addEventListener('mouseenter', () => { if (glance.open) clearTimeout(glance.timer); });
+}
+document.addEventListener('mousedown', (e) => { if (glance.open && !e.target.closest('#glance, #ring')) closeGlance(); });
+
+const WARN_ICO = '<svg viewBox="0 0 20 20" aria-hidden="true"><path d="M3.5 14.5a6.5 6.5 0 1 1 13 0" stroke="currentColor" stroke-width="1.7" fill="none" stroke-linecap="round"/><path d="M10 14.5l3.4-3.8" stroke="currentColor" stroke-width="1.7" stroke-linecap="round"/><circle cx="10" cy="14.5" r="1.3" fill="currentColor"/></svg>';
+function renderHeadsUp(S) {
+  const rows = [];
+  const keep = (key, pct) => dismissed[key] == null || pct >= dismissed[key] + 5;
+  const row = (level, ico, html, actions, key, pct) => h('div.hu-row', null, h('span.hu-ico.' + level, { html: ico }), h('span.hu-text', { html }),
+    h('span.hu-act', null, ...actions, key ? h('button.hu-x', { text: '×', title: 'Hide until it climbs 5 more points', 'aria-label': 'Hide', onclick: () => { dismissed[key] = pct; renderHeadsUp(S); } }) : null));
+  if (limits.status === 'rejected') {
+    rows.push(row('crit', WARN_ICO, `<strong>Usage limit reached</strong> <span class="soft">· ${esc(resetIn(limits.resetsAt))}</span>`, [h('button.hu-btn', { text: 'Details', onclick: () => openGlance(true) })]));
+  } else {
+    for (const [k, label, weekly] of [['five_hour', '5-hour limit', false], ['seven_day', 'Weekly limit', true]]) {
+      const w = limits[k]; if (!w || w.u == null) continue;
+      const p = Math.round(w.u * 100);
+      if ((p >= 80 || w.status === 'allowed_warning') && keep(k, p)) {
+        const lvl = p >= 90 ? 'crit' : 'warn';
+        rows.push(row(lvl, WARN_ICO, `<strong>${label}</strong> <span class="num-${lvl}">${p}%</span> used <span class="soft">· ${esc(resetIn(w.resetsAt, weekly))}</span>`, [h('button.hu-btn', { text: 'Details', onclick: () => openGlance(true) })], k, p));
+      }
+    }
   }
-  $('#status').replaceChildren(left, right);
+  const pct = ctxPct(S);
+  if (pct != null && pct >= 85 && keep(S.k + ':ctx', pct)) {
+    const thr = S.ctx.autoCompactThreshold && S.ctx.maxTokens ? Math.round((S.ctx.autoCompactThreshold / S.ctx.maxTokens) * 100) : null;
+    const mini = `<svg class="mini-ring crit" viewBox="0 0 20 20" aria-hidden="true"><circle class="track" cx="10" cy="10" r="7.5"/><circle class="arc" cx="10" cy="10" r="7.5" stroke-dasharray="${((pct / 100) * RING_C).toFixed(1)} ${RING_C.toFixed(1)}" transform="rotate(-90 10 10)"/></svg>`;
+    rows.push(row('crit', mini, `<strong>Context</strong> <span class="num-crit">${pct}%</span> full${thr ? ` <span class="soft">· older messages get summarized at ${thr}%</span>` : ''}`,
+      S.live ? [h('button.hu-btn', { text: 'Compact now', onclick: () => { input.value = '/compact'; submit(); } })] : [], S.k + ':ctx', pct));
+  }
+  const el = $('#headsup');
+  el.hidden = !rows.length;
+  el.replaceChildren(...rows);
 }
 
 setInterval(() => {
@@ -1638,10 +1757,12 @@ setInterval(() => {
     const secs = Math.round((Date.now() - S.turnStart) / 1000);
     const tok = S.thinkTok + S.outTok;
     S.working.querySelector('.verb').textContent = S.verb + '…';
-    S.working.querySelector('.meta').textContent = `${secs}s${tok ? ' · ↓ ' + fmtTok(tok) + ' tokens' : ''} · esc to interrupt`;
+    const agents = [...S.tasks.values()].filter((t) => t.status === 'running' && (t.type === 'local_agent' || t.subagent)).length;
+    S.working.querySelector('.meta').textContent = `${secs}s${tok ? ' · ↓ ' + fmtTok(tok) + ' tokens' : ''}${agents ? ` · ${agents} subagent${agents > 1 ? 's' : ''}` : ''} · esc to interrupt`;
     for (const t of S.tools.values()) if (t.status === 'running' && !t.agent && t.metaEl && !t.elapsed) t.metaEl.textContent = Math.round((Date.now() - t.start) / 1000) + 's';
   }
   if (activityOpen()) renderActivity();
+  if (glance.open && current) renderGlance(current);
 }, 1000);
 
 // ---------------------------------------------------------------- activity panel
@@ -1690,6 +1811,15 @@ function renderActivity() {
     kids.push(h('div', { style: 'padding:4px 8px' }, h('button.mini-btn', { text: 'Compact now', onclick: () => { input.value = '/compact'; submit(); } })));
   } else kids.push(h('div.a-empty', { text: S.live ? 'Updates after each turn.' : 'Available once the session is running.' }));
 
+  const wins = [['five_hour', '5-hour limit', false], ['seven_day', 'Weekly limit', true]].filter(([k]) => limits[k]?.u != null);
+  if (wins.length) {
+    kids.push(h('div.a-sec', { text: 'Usage limits' }));
+    for (const [k, label, weekly] of wins) {
+      const p = Math.round(limits[k].u * 100), t = tone(p, 80, 90);
+      kids.push(h('div.ctx-cats', null, h('div.row', null, h('span', { text: label }), h('span', { text: `${p}% · ${resetIn(limits[k].resetsAt, weekly)}` }))),
+        h('div.big-bar', null, h('i', { style: `width:${Math.min(100, p)}%;${t ? `background:var(--${t === 'crit' ? 'err' : 'warn'})` : ''}` })));
+    }
+  }
   kids.push(h('div.a-sec', { text: 'Session' }));
   const acct = S.init?.account;
   const kv = [
@@ -1700,6 +1830,7 @@ function renderActivity() {
     ['Version', S.init?.claude_code_version || S.sys?.claude_code_version || ''],
     ['Account', acct ? `${acct.subscriptionType || ''} ${acct.organization ? '· ' + acct.organization : ''}`.trim() : ''],
     ['Cost', S.cost ? '$' + S.cost.toFixed(4) : ''],
+    ['Status line', S.usageText ? S.usageText.replace(/\s+/g, ' ') : ''],
   ].filter(([, v]) => v);
   kids.push(h('dl.a-kv', null, kv.flatMap(([k, v]) => [h('dt', { text: k }), h('dd', { text: v, title: v, onclick: k === 'Session' ? () => { native('copy', { text: v }); toast('Session id copied'); } : null })])));
   const mcps = S.sys?.mcp_servers || [];
@@ -1961,6 +2092,7 @@ document.addEventListener('click', (e) => {
 document.addEventListener('keydown', (e) => {
   if (finder.open) { if (e.key === 'Escape') { e.preventDefault(); closeFinder(); } return; }
   if (e.key === 'Escape' && current) {
+    if (glance.open) { closeGlance(); return; }
     if (!$('#menu').hidden) { closeMenu(); return; }
     const card = $('#dock .prompt-card');
     if (card && document.activeElement !== input) return;

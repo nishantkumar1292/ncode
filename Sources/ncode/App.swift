@@ -111,7 +111,10 @@ struct RootView: View {
     }
     private var currentSubtitle: String {
         guard let k = model.selectedKey, let s = model.session(k) else { return "" }
-        return (s.cwd as NSString).abbreviatingWithTildeInPath
+        let path = (s.cwd as NSString).abbreviatingWithTildeInPath
+        // Branch from .git/HEAD (cheap, no git process); refreshed whenever the window redraws.
+        if let branch = ProjectFinder.gitBranch(s.cwd) { return "\(path)  ·  \(branch)" }
+        return path
     }
 }
 
