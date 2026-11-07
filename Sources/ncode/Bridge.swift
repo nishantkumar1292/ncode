@@ -122,6 +122,9 @@ final class Bridge: NSObject, WKScriptMessageHandlerWithReply, WKNavigationDeleg
         case "close":
             m.closeSession(key); replyHandler(true, nil)
 
+        case "addProject":
+            m.addProject(); replyHandler(true, nil)
+
         case "newChat":
             if let s = m.session(key) { m.newChat(in: s.cwd) } else { m.newChatInCurrentProject() }
             replyHandler(true, nil)

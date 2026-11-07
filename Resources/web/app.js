@@ -1617,7 +1617,7 @@ setInterval(() => {
 
 // ---------------------------------------------------------------- activity panel
 const activityOpen = () => !$('#activity').hidden;
-function toggleActivity() { $('#activity').hidden = !$('#activity').hidden; store.set('activity', activityOpen()); renderActivity(); if (activityOpen() && current?.live) current.request('get_context_usage').then((r) => { if (r) { current.ctx = r; renderActivity(); updateChrome(); } }); }
+function toggleActivity() { $('#activity').hidden = !$('#activity').hidden; renderActivity(); if (activityOpen() && current?.live) current.request('get_context_usage').then((r) => { if (r) { current.ctx = r; renderActivity(); updateChrome(); } }); }
 $('#activity-close').addEventListener('click', toggleActivity);
 let actTimer = 0;
 function scheduleActivity() { if (!activityOpen() || actTimer) return; actTimer = setTimeout(() => { actTimer = 0; renderActivity(); }, 250); }
@@ -1741,5 +1741,5 @@ function appCommand(name) {
   if (name === 'focus') input.focus();
 }
 
-if (store.get('activity', false)) $('#activity').hidden = false;
+$('#welcome-add').addEventListener('click', () => native('addProject'));
 native('ready');

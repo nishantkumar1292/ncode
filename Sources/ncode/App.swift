@@ -137,6 +137,7 @@ struct SidebarView: View {
                 VStack(spacing: 10) {
                     Text("No projects yet").foregroundStyle(.secondary)
                     Button("Add Project…") { model.addProject() }
+                    Text("⌘O").font(.caption).foregroundStyle(.tertiary)
                 }
             }
         }
@@ -312,7 +313,6 @@ struct SettingsView: View {
         Form {
             TextField("claude CLI path", text: $claudePath, prompt: Text(model.claudePath ?? "auto-detect"))
                 .onSubmit { model.claudePath = ShellEnv.findClaude(env: model.env) }
-            Toggle("Show projects in temporary folders", isOn: $model.showTemp)
             Toggle("Prompt suggestions (one extra model call per turn)", isOn: $promptSuggestions)
             Text("Detected: \(model.claudePath ?? "not found")").font(.caption).foregroundStyle(.secondary)
         }

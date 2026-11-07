@@ -4,7 +4,7 @@ A tiny native Mac app for [Claude Code](https://docs.claude.com/en/docs/claude-c
 
 - **~4 MB app**, under 1 MB of native code. Native SwiftUI shell, one system WebView for the chat. No Electron, no Node at runtime.
 - **Uses your installed `claude` CLI.** Your login, settings, `CLAUDE.md`, skills, plugins, hooks, MCP servers and permission rules all work as they do in the terminal.
-- **Same sessions as the terminal.** The sidebar reads `~/.claude/projects`, so every session you ran in the terminal shows up, and you can resume it.
+- **Same sessions as the terminal.** Add a project folder and its past Claude Code sessions from the terminal show up under it, ready to resume. The sidebar starts empty and only shows folders you add.
 
 > Unofficial. Not affiliated with Anthropic.
 
@@ -12,7 +12,7 @@ A tiny native Mac app for [Claude Code](https://docs.claude.com/en/docs/claude-c
 
 | Area | What you get |
 |---|---|
-| Projects | Sidebar of every project Claude Code knows, with past sessions by title. Add any folder. Live status dots for running, waiting for approval, and background tasks. |
+| Projects | Sidebar of the folders you add (⌘O), each with its past sessions by title. Live status dots for running, waiting for approval, and background tasks. |
 | Chat | Streaming markdown with GFM tables, task lists, syntax-highlighted code with copy, KaTeX math, Mermaid diagrams, images (paste, drag-drop or attach), summarized thinking. |
 | Tools | Every tool call as a compact row: Bash with output, Read, Write, Edit diffs with line numbers, Grep/Glob, web, MCP tools, todo lists. |
 | Subagents | Each subagent gets a live card with its type, task, current step, tool and token counts, duration, a Stop button, and its full nested transcript. |
@@ -83,7 +83,7 @@ Sources/ncode/
   AppModel.swift     projects, sessions, notifications, launch args
   Session.swift      one `claude` child process per chat
   Bridge.swift       WKWebView + JS bridge + local file scheme
-  ProjectStore.swift reads ~/.claude/projects (titles, history)
+  ProjectStore.swift added folders + their sessions from ~/.claude/projects
   FileIndex.swift    @-mention file list
   ShellEnv.swift     login-shell env and `claude` lookup
 Resources/web/

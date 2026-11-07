@@ -10,9 +10,6 @@ final class AppModel: ObservableObject {
     @Published var liveSessions: [String: Session] = [:]
     @Published var claudePath: String?
     @Published var envReady = false
-    @Published var showTemp = UserDefaults.standard.bool(forKey: "showTemp") {
-        didSet { UserDefaults.standard.set(showTemp, forKey: "showTemp"); refreshProjects() }
-    }
     @Published var expanded: Set<String> = []
 
     private(set) var env: [String: String] = ProcessInfo.processInfo.environment
@@ -22,10 +19,6 @@ final class AppModel: ObservableObject {
     private var extraPaths: [String] {
         get { UserDefaults.standard.stringArray(forKey: "extraProjects") ?? [] }
         set { UserDefaults.standard.set(newValue, forKey: "extraProjects") }
-    }
-    private var hidden: Set<String> {
-        get { Set(UserDefaults.standard.stringArray(forKey: "hiddenProjects") ?? []) }
-        set { UserDefaults.standard.set(Array(newValue), forKey: "hiddenProjects") }
     }
 
     init() {
@@ -86,6 +79,7 @@ final class AppModel: ObservableObject {
         if let resume, let found = ProjectStore.locate(sessionId: resume) {
             let s = liveSessions[resume] ?? makeSession(key: resume, cwd: found.cwd, title: ProjectStore.title(for: SessionMeta(id: resume, title: "", modified: .distantPast, file: found.file)), hasTranscript: true)
             s.transcriptFile = found.file
+            if !extraPaths.contains(found.cwd) { extraPaths.append(found.cwd); refreshProjects() }
             expanded.insert(found.cwd)
             select(resume)
             if prompt != nil || model != nil || mode != nil { bridge.launch(key: resume, prompt: prompt, model: model, mode: mode) }
@@ -110,9 +104,9 @@ final class AppModel: ObservableObject {
         refreshWork?.cancel()
         let work = DispatchWorkItem { [weak self] in
             guard let self else { return }
-            let extra = self.extraPaths, hidden = self.hidden, temp = self.showTemp
+            let paths = self.extraPaths
             DispatchQueue.global(qos: .userInitiated).async {
-                var list = ProjectStore.scan(extraPaths: extra, hidden: hidden, showTemp: temp)
+                var list = ProjectStore.scan(paths: paths)
                 // Titles only for the sessions we will show.
                 for i in list.indices {
                     for j in list[i].sessions.indices.prefix(30) {
@@ -138,14 +132,13 @@ final class AppModel: ObservableObject {
         guard panel.runModal() == .OK, let url = panel.url else { return }
         let path = url.path
         if !extraPaths.contains(path) { extraPaths.append(path) }
-        var h = hidden; h.remove(path); hidden = h
         expanded.insert(path)
         refreshProjects()
         newChat(in: path)
     }
 
     func hideProject(_ cwd: String) {
-        var h = hidden; h.insert(cwd); hidden = h
+        for s in liveSessions.values where s.cwd == cwd { closeSession(s.key) }
         extraPaths.removeAll { $0 == cwd }
         refreshProjects()
     }

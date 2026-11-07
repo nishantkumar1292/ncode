@@ -31,55 +31,49 @@ enum ProjectStore {
     private static var titleCache: [String: (Date, String)] = [:]
     private static let cacheLock = NSLock()
 
+    /// Same folder-name encoding the CLI uses for ~/.claude/projects/<encoded cwd>.
     static func encode(_ cwd: String) -> String {
-        String(cwd.map { ($0.isLetter || $0.isNumber) ? $0 : "-" })
+        String(cwd.map { ($0.isASCII && ($0.isLetter || $0.isNumber)) ? $0 : "-" })
     }
 
-    static func scan(extraPaths: [String], hidden: Set<String>, showTemp: Bool) -> [Project] {
+    /// Only the folders the user added. Each one picks up its past Claude Code sessions.
+    static func scan(paths: [String]) -> [Project] {
         let fm = FileManager.default
-        var byCwd: [String: Project] = [:]
-        let dirs = (try? fm.contentsOfDirectory(at: projectsDir, includingPropertiesForKeys: [.isDirectoryKey], options: [.skipsHiddenFiles])) ?? []
-        for dir in dirs {
-            let files = ((try? fm.contentsOfDirectory(at: dir, includingPropertiesForKeys: [.contentModificationDateKey, .fileSizeKey], options: [.skipsHiddenFiles])) ?? [])
-                .filter { $0.pathExtension == "jsonl" }
-            guard !files.isEmpty else { continue }
+        var projects: [Project] = []
+        for path in Set(paths) where fm.fileExists(atPath: path) {
+            let dir = transcriptDir(for: path)
             var metas: [SessionMeta] = []
-            for f in files {
-                let vals = try? f.resourceValues(forKeys: [.contentModificationDateKey, .fileSizeKey])
-                let size = vals?.fileSize ?? 0
-                if size < 200 { continue }
-                let mod = vals?.contentModificationDate ?? .distantPast
-                metas.append(SessionMeta(id: f.deletingPathExtension().lastPathComponent, title: "", modified: mod, file: f))
+            if let dir {
+                let files = ((try? fm.contentsOfDirectory(at: dir, includingPropertiesForKeys: [.contentModificationDateKey, .fileSizeKey], options: [.skipsHiddenFiles])) ?? [])
+                    .filter { $0.pathExtension == "jsonl" }
+                for f in files {
+                    let vals = try? f.resourceValues(forKeys: [.contentModificationDateKey, .fileSizeKey])
+                    if (vals?.fileSize ?? 0) < 200 { continue }
+                    metas.append(SessionMeta(id: f.deletingPathExtension().lastPathComponent, title: "", modified: vals?.contentModificationDate ?? .distantPast, file: f))
+                }
+                metas.sort { $0.modified > $1.modified }
             }
-            guard !metas.isEmpty else { continue }
-            metas.sort { $0.modified > $1.modified }
-            guard let cwd = readCwd(metas) else { continue }
-            if !showTemp && isTemp(cwd) { continue }
-            if var existing = byCwd[cwd] {
-                existing.sessions += metas
-                existing.sessions.sort { $0.modified > $1.modified }
-                existing.transcriptDirs.append(dir)
-                existing.lastActivity = max(existing.lastActivity, metas[0].modified)
-                byCwd[cwd] = existing
-            } else {
-                byCwd[cwd] = Project(cwd: cwd, transcriptDirs: [dir], sessions: metas, lastActivity: metas[0].modified, pinned: false)
-            }
+            let folderDate = (try? fm.attributesOfItem(atPath: path)[.modificationDate] as? Date) ?? .distantPast
+            projects.append(Project(cwd: path, transcriptDirs: dir.map { [$0] } ?? [], sessions: metas,
+                                    lastActivity: metas.first?.modified ?? folderDate, pinned: true))
         }
-        for path in extraPaths where byCwd[path] == nil {
-            let mod = (try? fm.attributesOfItem(atPath: path)[.modificationDate] as? Date) ?? .distantPast
-            byCwd[path] = Project(cwd: path, transcriptDirs: [], sessions: [], lastActivity: mod, pinned: true)
-        }
-        for path in extraPaths { byCwd[path]?.pinned = true }
-        var projects = byCwd.values.filter { !hidden.contains($0.cwd) && FileManager.default.fileExists(atPath: $0.cwd) }
-        projects.sort { a, b in
-            if a.pinned != b.pinned { return a.pinned }
-            return a.lastActivity > b.lastActivity
-        }
+        projects.sort { $0.lastActivity > $1.lastActivity }
         return projects
     }
 
-    static func isTemp(_ p: String) -> Bool {
-        p.hasPrefix("/private/tmp") || p.hasPrefix("/tmp") || p.hasPrefix("/private/var/folders") || p.hasPrefix("/var/folders")
+    private static func transcriptDir(for path: String) -> URL? {
+        let fm = FileManager.default
+        let encoded = encode(path)
+        let direct = projectsDir.appendingPathComponent(encoded)
+        if fm.fileExists(atPath: direct.path) { return direct }
+        // Very long paths get shortened by the CLI; match on the prefix and confirm via the recorded cwd.
+        guard encoded.count > 200 else { return nil }
+        let dirs = (try? fm.contentsOfDirectory(at: projectsDir, includingPropertiesForKeys: nil)) ?? []
+        for d in dirs where d.lastPathComponent.hasPrefix(String(encoded.prefix(200))) {
+            let f = ((try? fm.contentsOfDirectory(at: d, includingPropertiesForKeys: nil)) ?? []).first { $0.pathExtension == "jsonl" }
+            if let f, readCwd([SessionMeta(id: "", title: "", modified: .distantPast, file: f)]) == path { return d }
+        }
+        return nil
     }
 
     /// The transcript directory name is a lossy encoding of the path; read the real cwd.
