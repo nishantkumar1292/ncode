@@ -19,8 +19,51 @@ struct Project: Identifiable, Hashable {
     var accountDir: String? = nil   // account new chats use (nil = default)
 }
 
-/// Reads Claude Code's own on-disk session store (~/.claude/projects), so the sidebar
-/// shows exactly the projects and sessions the CLI knows about.
+/// Chats started in ncode. The CLI saves every chat in a folder to the same place (terminal
+/// chats, `claude -p` scripts, other apps), so ncode keeps its own list and the sidebar shows
+/// only these.
+enum OwnedSessions {
+    private static let key = "ncodeSessions"
+    private static let seededKey = "ncodeSessionsSeeded"
+    private static let lock = NSLock()
+
+    static func all() -> Set<String> {
+        lock.lock(); defer { lock.unlock() }
+        return Set(UserDefaults.standard.stringArray(forKey: key) ?? [])
+    }
+
+    static func add(_ id: String) { add([id]) }
+
+    static func add(_ ids: [String]) {
+        lock.lock(); defer { lock.unlock() }
+        var list = UserDefaults.standard.stringArray(forKey: key) ?? []
+        var known = Set(list), changed = false
+        for id in ids where !id.isEmpty && !known.contains(id) { list.append(id); known.insert(id); changed = true }
+        if changed { UserDefaults.standard.set(list, forKey: key) }
+    }
+
+    /// One-time upgrade from before ncode kept this list: adopt the chats in the added folders
+    /// that ran headless (`claude -p`, entrypoint "sdk-cli"), which is how ncode runs `claude`.
+    static func seedIfNeeded(paths: [String], accounts: [ClaudeAccount]) {
+        guard !UserDefaults.standard.bool(forKey: seededKey) else { return }
+        var ids: [String] = []
+        for path in Set(paths) {
+            for account in accounts {
+                guard let dir = ProjectStore.transcriptDir(for: path, in: account.projectsDir) else { continue }
+                let files = ((try? FileManager.default.contentsOfDirectory(at: dir, includingPropertiesForKeys: nil)) ?? [])
+                    .filter { $0.pathExtension == "jsonl" }
+                for f in files where ProjectStore.entrypoint(of: f) == "sdk-cli" {
+                    ids.append(f.deletingPathExtension().lastPathComponent)
+                }
+            }
+        }
+        add(ids)
+        UserDefaults.standard.set(true, forKey: seededKey)
+    }
+}
+
+/// Reads Claude Code's own on-disk session store (~/.claude/projects) for the folders the user
+/// added, and lists the chats ncode started there (see `OwnedSessions`).
 enum ProjectStore {
     static var claudeDir: URL {
         if let custom = ProcessInfo.processInfo.environment["CLAUDE_CONFIG_DIR"], !custom.isEmpty {
@@ -38,8 +81,9 @@ enum ProjectStore {
         String(cwd.map { ($0.isASCII && ($0.isLetter || $0.isNumber)) ? $0 : "-" })
     }
 
-    /// Only the folders the user added. Each one lists its past sessions from every account.
-    static func scan(paths: [String], addedAt: [String: Double] = [:], accounts: [ClaudeAccount]) -> [Project] {
+    /// Only the folders the user added. Each one lists the chats ncode started there (`owned`),
+    /// from every account.
+    static func scan(paths: [String], addedAt: [String: Double] = [:], accounts: [ClaudeAccount], owned: Set<String>) -> [Project] {
         let fm = FileManager.default
         var projects: [Project] = []
         for path in Set(paths) where fm.fileExists(atPath: path) {
@@ -49,7 +93,7 @@ enum ProjectStore {
                 dirs.append(dir)
                 let files = ((try? fm.contentsOfDirectory(at: dir, includingPropertiesForKeys: [.contentModificationDateKey, .fileSizeKey], options: [.skipsHiddenFiles])) ?? [])
                     .filter { $0.pathExtension == "jsonl" }
-                for f in files {
+                for f in files where owned.contains(f.deletingPathExtension().lastPathComponent) {
                     let vals = try? f.resourceValues(forKeys: [.contentModificationDateKey, .fileSizeKey])
                     if (vals?.fileSize ?? 0) < 200 { continue }
                     metas.append(SessionMeta(id: f.deletingPathExtension().lastPathComponent, title: "", modified: vals?.contentModificationDate ?? .distantPast, file: f, configDir: account.dir))
@@ -93,6 +137,15 @@ enum ProjectStore {
             }
         }
         return nil
+    }
+
+    /// Which program started the chat, as the CLI records it: "cli" (terminal), "sdk-cli" (`claude -p`), ...
+    /// The key sits after the message body, so search the whole (memory-mapped) file, not a prefix:
+    /// a first prompt with a pasted image can be megabytes long.
+    static func entrypoint(of url: URL) -> String? {
+        guard let data = try? Data(contentsOf: url, options: .alwaysMapped),
+              let r = data.range(of: Data(#""entrypoint":""#.utf8)) else { return nil }
+        return jsonString(data, from: r.upperBound)
     }
 
     /// Title precedence mirrors the CLI: custom title > AI title > first prompt.

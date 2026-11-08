@@ -5,7 +5,7 @@ A tiny native Mac app for [Claude Code](https://docs.claude.com/en/docs/claude-c
 - **~4 MB app**, under 1 MB of native code. Native SwiftUI shell, one system WebView for the chat. No Electron, no Node at runtime.
 - **Uses your installed `claude` CLI.** Your login, settings, `CLAUDE.md`, skills, plugins, hooks, MCP servers and permission rules all work as they do in the terminal.
 - **Multiple Claude accounts.** If you run several accounts with `CLAUDE_CONFIG_DIR` (for example `~/.claude-personal`), ncode finds them, runs each project on its own account, and shows which one with a chip next to the model. When you add a project, it picks the account you used there most recently.
-- **Same sessions as the terminal.** Add a project folder and its past Claude Code sessions from the terminal show up under it, ready to resume. The sidebar starts empty and only shows folders you add.
+- **Only the chats you start in ncode.** The sidebar starts empty and only shows folders you add. Under each one it lists the chats you started in ncode, not every Claude Code session saved for that folder (terminal chats, `claude -p` scripts, other apps).
 
 > Unofficial. Not affiliated with Anthropic.
 
@@ -13,7 +13,7 @@ A tiny native Mac app for [Claude Code](https://docs.claude.com/en/docs/claude-c
 
 | Area | What you get |
 |---|---|
-| Projects | Sidebar of the folders you add (⌘O), each with its past sessions by title. Live status dots for running, waiting for approval, and background tasks. |
+| Projects | Sidebar of the folders you add (⌘O), each with the chats you started there in ncode, by title. Live status dots for running, waiting for approval, and background tasks. |
 | Chat | Streaming markdown with GFM tables, task lists, syntax-highlighted code with copy, KaTeX math, Mermaid diagrams, images (paste, drag-drop or attach), summarized thinking. |
 | Tools | Every tool call as a compact row: Bash with output, Read, Write, Edit diffs with line numbers, Grep/Glob, web, MCP tools, todo lists. |
 | Subagents | Each subagent gets a live card with its type, task, current step, tool and token counts, duration, a Stop button, and its full nested transcript. |
@@ -21,7 +21,7 @@ A tiny native Mac app for [Claude Code](https://docs.claude.com/en/docs/claude-c
 | Permissions | Inline approve/deny cards with diffs and command previews. Supports "always allow" rules, plan approval, and `AskUserQuestion` multiple choice. |
 | Composer | `/` command and skill autocomplete, `@` file mentions, `!` shell mode, ↑ prompt history, prompt suggestions (⇥), queueing while Claude works. |
 | Controls | Permission mode (⇧⇥ to cycle), model and effort picker, interrupt (esc), `/compact`, `/context`, `/usage` and every other slash command the CLI supports in headless mode. |
-| Accounts | One account per project, picked automatically from where you used it. A chip in the composer shows it (colored initial + name); its menu switches, and a started chat stays put while a new chat opens on the other account, with your draft. Sessions from every account are listed and resume on their own account. Add any config folder by hand. |
+| Accounts | One account per project, picked automatically from where you used it. A chip in the composer shows it (colored initial + name); its menu switches, and a started chat stays put while a new chat opens on the other account, with your draft. Chats from every account are listed and resume on their own account. Add any config folder by hand. |
 | Escape hatch | "Open in Terminal" resumes the same session in the full TUI. |
 
 ## Install
@@ -97,7 +97,7 @@ Sources/ncode/
   AppModel.swift     projects, sessions, notifications, launch args
   Session.swift      one `claude` child process per chat
   Bridge.swift       WKWebView + JS bridge + local file scheme
-  ProjectStore.swift added folders + their sessions from ~/.claude/projects
+  ProjectStore.swift added folders + the chats ncode started in them (~/.claude/projects)
   ProjectFinder.swift candidates for the ⌘O project finder
   FileIndex.swift    @-mention file list
   ShellEnv.swift     login-shell env and `claude` lookup

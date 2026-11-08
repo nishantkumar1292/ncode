@@ -206,7 +206,8 @@ final class Session: ObservableObject, Identifiable {
         switch peek.type {
         case "system":
             if peek.subtype == "init" {
-                if !peek.sessionId.isEmpty { sessionId = peek.sessionId }
+                // The CLI can move a chat to a new id (e.g. /clear); keep that one listed too.
+                if !peek.sessionId.isEmpty { sessionId = peek.sessionId; OwnedSessions.add(peek.sessionId) }
                 if phase == .starting { phase = .idle }
             } else if peek.subtype == "background_tasks_changed" {
                 runningTasks = Int(peek.requestId) ?? 0

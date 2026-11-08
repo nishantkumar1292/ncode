@@ -81,6 +81,7 @@ final class AppModel: ObservableObject {
             i += 1
         }
         if let resume, let found = ProjectStore.locate(sessionId: resume, accounts: accounts) {
+            OwnedSessions.add(resume)   // asked for by id, so it joins ncode's list even if it began elsewhere
             let s = liveSessions[resume] ?? makeSession(key: resume, cwd: found.cwd, title: ProjectStore.title(for: SessionMeta(id: resume, title: "", modified: .distantPast, file: found.file)), hasTranscript: true, configDir: found.configDir)
             s.transcriptFile = found.file
             if !extraPaths.contains(found.cwd) { extraPaths.append(found.cwd); refreshProjects() }
@@ -110,7 +111,8 @@ final class AppModel: ObservableObject {
             guard let self else { return }
             let paths = self.extraPaths, added = self.addedAt, accounts = self.accounts
             DispatchQueue.global(qos: .userInitiated).async {
-                var list = ProjectStore.scan(paths: paths, addedAt: added, accounts: accounts)
+                OwnedSessions.seedIfNeeded(paths: paths, accounts: accounts)
+                var list = ProjectStore.scan(paths: paths, addedAt: added, accounts: accounts, owned: OwnedSessions.all())
                 let saved = UserDefaults.standard.dictionary(forKey: "projectAccount") as? [String: String] ?? [:]
                 var detected: [String: String] = [:]
                 for i in list.indices {
@@ -249,6 +251,7 @@ final class AppModel: ObservableObject {
 
     func newChat(in cwd: String) {
         let key = UUID().uuidString.lowercased()
+        OwnedSessions.add(key)
         let s = makeSession(key: key, cwd: cwd, title: "New chat", hasTranscript: false, configDir: account(forProject: cwd).dir)
         s.historyLoaded = true
         expanded.insert(cwd)
