@@ -1429,7 +1429,7 @@ async function submit() {
     if (cmd === 'resume') { input.value = ''; toast('Pick any past session in the sidebar to resume it.'); return; }
     if (cmd === 'exit' || cmd === 'quit') { input.value = ''; native('end', { k: S.k }); return; }
     if (cmd === 'model' && sm[2]) { S.opts.model = sm[2].trim(); }
-    if (cmd === 'rename' && sm[2]) native('title', { k: S.k, title: sm[2].trim() });
+    if (cmd === 'rename' && sm[2]) { S.title = sm[2].trim(); native('title', { k: S.k, title: S.title }); }
   }
 
   const content = [];
@@ -1438,6 +1438,8 @@ async function submit() {
   const message = { type: 'user', message: { role: 'user', content: content.length === 1 && content[0].type === 'text' ? text : content }, parent_tool_use_id: null };
 
   const isCmd = /^\/\S/.test(text);
+  // Title a new chat from its first prompt, once; later prompts never rename it.
+  if (S.title === 'New chat' && text && !isCmd) { S.title = text.slice(0, 60); native('title', { k: S.k, title: S.title, auto: true }); }
   const bubble = userBubble(S, text, S.draft.atts.map((a) => `data:${a.mime};base64,${a.data}`), isCmd);
   if (S.busy) bubble.querySelector('.user-bubble').classList.add('queued');
   S.append(bubble);
@@ -1450,7 +1452,6 @@ async function submit() {
   S.scroll(true);
   const ok = await S.write(message);
   if (!ok) { setBusy(S, false); bubble.append(notice('Not sent: Claude Code is not available.', 'error')); }
-  if (S.title === 'New chat' && text && !isCmd) native('title', { k: S.k, title: text.slice(0, 60) });
   updateChrome();
 }
 

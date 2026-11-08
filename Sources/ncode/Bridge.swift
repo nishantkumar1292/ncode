@@ -168,7 +168,9 @@ final class Bridge: NSObject, WKScriptMessageHandlerWithReply, WKNavigationDeleg
             replyHandler(true, nil)
 
         case "title":
-            if let s = m.session(key), let t = body["title"] as? String, !t.isEmpty { s.title = t }
+            // `auto` titles come from the first prompt and must never replace an existing title.
+            if let s = m.session(key), let t = body["title"] as? String, !t.isEmpty,
+               body["auto"] as? Bool != true || s.title == "New chat" { s.title = t }
             replyHandler(true, nil)
 
         case "openURL":
