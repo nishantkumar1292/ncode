@@ -37,6 +37,56 @@ struct ClaudeAccount: Identifiable, Hashable {
     var historyFile: URL { root.appendingPathComponent("history.jsonl") }
 }
 
+/// Claude in Chrome settings, read from (and the default written to) the account's config file,
+/// the same keys the terminal's /chrome screen uses.
+enum ChromeSettings {
+    static let defaultKey = "claudeInChromeDefaultEnabled"
+
+    /// The config file the CLI uses for this config dir (`~/.claude.json` when none is set).
+    static func configFile(configDir: String?) -> URL {
+        if let d = configDir, !d.isEmpty { return URL(fileURLWithPath: d).appendingPathComponent(".claude.json") }
+        return URL(fileURLWithPath: NSHomeDirectory()).appendingPathComponent(".claude.json")
+    }
+
+    private static func load(_ file: URL) -> [String: Any] {
+        guard let data = try? Data(contentsOf: file),
+              let obj = try? JSONSerialization.jsonObject(with: data) as? [String: Any] else { return [:] }
+        return obj
+    }
+
+    static func enabledByDefault(configDir: String?) -> Bool {
+        load(configFile(configDir: configDir))[defaultKey] as? Bool == true
+    }
+
+    static func info(configDir: String?) -> [String: Any] {
+        let o = load(configFile(configDir: configDir))
+        var out: [String: Any] = [
+            "enabledByDefault": o[defaultKey] as? Bool == true,
+            "installed": o["cachedChromeExtensionInstalled"] as? Bool == true,
+        ]
+        if let b = (o["chromeExtension"] as? [String: Any])?["pairedDeviceName"] as? String { out["browser"] = b }
+        return out
+    }
+
+    /// Flip "Enabled by default" without rewriting the rest of the file: the CLI owns this file
+    /// and keeps its formatting, so only the one value changes. Written atomically, owner-only.
+    static func setEnabledByDefault(_ on: Bool, configDir: String?) -> Bool {
+        let file = configFile(configDir: configDir)
+        guard var text = try? String(contentsOf: file, encoding: .utf8) else { return false }
+        let pattern = "\"\(defaultKey)\"\\s*:\\s*(true|false)"
+        if let r = text.range(of: pattern, options: .regularExpression) {
+            text.replaceSubrange(r, with: "\"\(defaultKey)\": \(on)")
+        } else if let brace = text.firstIndex(of: "{") {
+            text.insert(contentsOf: "\n  \"\(defaultKey)\": \(on),", at: text.index(after: brace))
+        } else { return false }
+        guard (try? JSONSerialization.jsonObject(with: Data(text.utf8))) != nil else { return false }
+        let tmp = file.deletingLastPathComponent().appendingPathComponent(".ncode-\(UUID().uuidString).tmp")
+        guard FileManager.default.createFile(atPath: tmp.path, contents: Data(text.utf8), attributes: [.posixPermissions: 0o600]) else { return false }
+        if rename(tmp.path, file.path) != 0 { try? FileManager.default.removeItem(at: tmp); return false }
+        return true
+    }
+}
+
 enum Accounts {
     /// The default account plus every `~/.claude-*` folder that has a Claude config file,
     /// plus any folders the user added by hand.

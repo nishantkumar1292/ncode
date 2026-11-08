@@ -141,6 +141,22 @@ final class Bridge: NSObject, WKScriptMessageHandlerWithReply, WKNavigationDeleg
         case "addAccountFolder":
             m.addAccountFolder(); replyHandler(true, nil)
 
+        // Claude in Chrome settings of the chat's account (the config dir its `claude` runs with).
+        case "chromeInfo":
+            let dir = m.session(key)?.configDir ?? m.env["CLAUDE_CONFIG_DIR"]
+            DispatchQueue.global(qos: .userInitiated).async {
+                let info = ChromeSettings.info(configDir: dir)
+                DispatchQueue.main.async { replyHandler(info, nil) }
+            }
+
+        case "setChromeDefault":
+            let dir = m.session(key)?.configDir ?? m.env["CLAUDE_CONFIG_DIR"]
+            let on = body["on"] as? Bool ?? false
+            DispatchQueue.global(qos: .userInitiated).async {
+                let ok = ChromeSettings.setEnabledByDefault(on, configDir: dir)
+                DispatchQueue.main.async { replyHandler(ok, nil) }
+            }
+
         case "projectCandidates":
             let added = m.addedPaths, accounts = m.accounts
             DispatchQueue.global(qos: .userInitiated).async {

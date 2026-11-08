@@ -280,6 +280,25 @@ kbd { font: 11px var(--font-mono); padding: 1px 5px; border: 1px solid var(--bor
 .ring { border: 0; background: transparent; height: 30px; min-width: 30px; padding: 0 6px; border-radius: 9px; display: inline-flex; align-items: center; justify-content: center; gap: 5px; cursor: pointer; color: var(--text-3); font: 500 12px var(--font-ui); font-variant-numeric: tabular-nums; }
 .ring:hover, .ring.is-open, .ring:focus-visible { background: var(--surface-3); color: var(--text-2); outline: none; }
 .ring svg { width: 18px; height: 18px; display: block; flex: none; }
+
+/* Claude in Chrome chip: shown only while Chrome is on for this chat; a dot only when it needs a look */
+.cr { position: relative; border: 0; background: transparent; width: 30px; height: 30px; border-radius: 9px; display: inline-grid; place-items: center; cursor: pointer; color: var(--text-3); flex: none; }
+.cr:hover, .cr:focus-visible { background: var(--surface-3); color: var(--text-2); outline: none; }
+.cr svg { width: 17px; height: 17px; display: block; }
+.cr i { position: absolute; right: 4px; bottom: 5px; width: 7px; height: 7px; border-radius: 50%; box-shadow: 0 0 0 2px var(--surface); display: none; }
+.cr.pending i { display: block; background: var(--surface); border: 1.5px solid var(--warn); width: 6px; height: 6px; }
+.cr.failed { color: var(--err); } .cr.failed i { display: block; background: var(--err); }
+.cr.noext { color: var(--warn); } .cr.noext i { display: block; background: var(--warn); }
+.cr.queued { outline: 1px dashed var(--border-strong); outline-offset: -3px; }
+.menu .m-status { display: flex; align-items: center; gap: 10px; padding: 2px 10px 6px; font-size: 12.5px; color: var(--text); }
+.menu .m-status .sd { width: 14px; display: grid; place-items: center; flex: none; }
+.menu .m-status .sd::before { content: ""; width: 7px; height: 7px; border-radius: 50%; background: var(--ok); }
+.menu .m-status .sd.off::before { background: transparent; border: 1.2px solid var(--text-3); width: 6px; height: 6px; }
+.menu .m-status .sd.pending::before { background: transparent; border: 1.5px solid var(--warn); width: 6px; height: 6px; }
+.menu .m-status .sd.failed::before { background: var(--err); }
+.menu .m-status .sd.noext::before { background: var(--warn); }
+.menu .m-status .soft { color: var(--text-3); }
+.menu .m-item .m-desc.wait { color: var(--warn); }
 .ring .track, .mini-ring .track { fill: none; stroke: var(--border-strong); stroke-width: 2; }
 .ring .arc, .mini-ring .arc { fill: none; stroke: var(--text-2); stroke-width: 2; stroke-linecap: round; transition: stroke-dasharray .4s ease; }
 .ring .core { fill: var(--ok); }

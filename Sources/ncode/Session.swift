@@ -30,6 +30,7 @@ final class Session: ObservableObject, Identifiable {
     private let ioQueue: DispatchQueue
     private var writeBacklog: [String] = []
     private var launchOptions: [String: Any] = [:]
+    private var sentUser = false
 
     var onLine: ((Session, String) -> Void)?
     var onAttention: ((Session, String) -> Void)?   // reason: "permission" | "done"
@@ -69,13 +70,18 @@ final class Session: ObservableObject, Identifiable {
         args += ["--allow-dangerously-skip-permissions"]
         if let e = options["effort"] as? String, !e.isEmpty { args += ["--effort", e] }
 
+        var env = env
+        env.removeValue(forKey: "CLAUDECODE")
+        if let configDir { env["CLAUDE_CONFIG_DIR"] = configDir }
+        // `claude -p` ignores the "Chrome enabled by default" setting (/chrome in the terminal), so pass
+        // it on, or the Claude in Chrome tools never load. A chat can override it (`chrome` option).
+        let chrome = options["chrome"] as? Bool ?? ChromeSettings.enabledByDefault(configDir: env["CLAUDE_CONFIG_DIR"])
+        args.append(chrome ? "--chrome" : "--no-chrome")
+
         let p = Process()
         p.executableURL = URL(fileURLWithPath: claudePath)
         p.arguments = args
         p.currentDirectoryURL = URL(fileURLWithPath: cwd)
-        var env = env
-        env.removeValue(forKey: "CLAUDECODE")
-        if let configDir { env["CLAUDE_CONFIG_DIR"] = configDir }
         p.environment = env
 
         let inPipe = Pipe(), outPipe = Pipe(), errPipe = Pipe()
@@ -111,7 +117,9 @@ final class Session: ObservableObject, Identifiable {
                     self.phase = .exited(code)
                     self.pendingPrompts.removeAll()
                     self.runningTasks = 0
-                    self.hasTranscript = true
+                    // The CLI saves a chat only once it gets a message; a warmed-up chat that never
+                    // sent one has nothing to --resume.
+                    if self.sentUser { self.hasTranscript = true }
                     let payload: [String: Any] = ["type": "ncode_exit", "code": Int(code), "stderr": tail]
                     if let data = try? JSONSerialization.data(withJSONObject: payload),
                        let line = String(data: data, encoding: .utf8) {
@@ -237,6 +245,7 @@ final class Session: ObservableObject, Identifiable {
               let obj = try? JSONSerialization.jsonObject(with: data) as? [String: Any] else { return }
         let type = obj["type"] as? String
         if type == "user" {
+            sentUser = true
             let shouldQuery = obj["shouldQuery"] as? Bool ?? true
             if shouldQuery { phase = .busy }
             lastActivity = Date()

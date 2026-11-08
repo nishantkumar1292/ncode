@@ -22,6 +22,7 @@ A tiny native Mac app for [Claude Code](https://docs.claude.com/en/docs/claude-c
 | Composer | `/` command and skill autocomplete, `@` file mentions, `!` shell mode, ↑ prompt history, prompt suggestions (⇥), queueing while Claude works. |
 | Controls | Permission mode (⇧⇥ to cycle), model and effort picker, interrupt (esc), `/compact`, `/context`, `/usage` and every other slash command the CLI supports in headless mode. |
 | Accounts | One account per project, picked automatically from where you used it. A chip in the composer shows it (colored initial + name); its menu switches, and a started chat stays put while a new chat opens on the other account, with your draft. Chats from every account are listed and resume on their own account. Add any config folder by hand. |
+| Claude in Chrome | On in chats when your account has it on by default, as in the terminal. A small browser icon by the composer shows it's on and turns amber or red when it needs you. `/chrome` (or the icon) turns it on or off for one chat, sets the account default, reconnects, and links to site permissions. |
 | Escape hatch | "Open in Terminal" resumes the same session in the full TUI. |
 
 ## Install

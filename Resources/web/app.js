@@ -55,11 +55,13 @@ const APP_COMMANDS = [
   { name: 'clear', description: 'Start a new chat in this project', app: true },
   { name: 'terminal', description: 'Open this session in Terminal (full TUI)', app: true },
   { name: 'activity', description: 'Toggle the activity panel', app: true },
+  { name: 'chrome', description: 'Open Claude in Chrome settings', app: true },
 ];
 
 // ---------------------------------------------------------------- session state
 const sessions = new Map();
 let current = null;
+let browserMenu = null;                  // the chat whose Claude in Chrome menu is open (re-rendered live)
 let config = { home: '' };
 let lastModels = store.get('models', null);
 let accounts = [];                       // Claude config dirs, from Swift
@@ -148,7 +150,7 @@ class Session {
     const line = JSON.stringify(obj);
     return native('write', { k: this.k, line, opts: opts || (this.live ? undefined : this.launchOpts()) });
   }
-  launchOpts() { return { model: this.opts.model || '', permissionMode: this.mode, effort: this.opts.effort || '' }; }
+  launchOpts() { return { model: this.opts.model || '', permissionMode: this.mode, effort: this.opts.effort || '', ...(this.opts.chrome != null && { chrome: this.opts.chrome }) }; }
   request(sub, extra = {}) {
     if (!this.live) return Promise.resolve(null);
     const id = 'ui-' + uid();
@@ -195,6 +197,7 @@ function route(m, touched) {
     case 'open': {
       const s = getSession(m.k);
       s.cwd = m.cwd; s.title = m.title; s.resumable = m.resumable;
+      refreshChrome(s);                  // its account's Chrome settings (the account can change before the first message)
       if (m.account) s.account = m.account;
       if (m.projectAccount != null) s.projectAccount = m.projectAccount;
       if (!m.live && s.live) s.live = false;
@@ -552,10 +555,12 @@ function onResult(S, o) {
   }
   for (const t of S.tools.values()) if (t.status === 'running' && !t.bgTask && !t.parent) { t.status = 'done'; renderTool(t); }
   if (S.live) S.request('get_context_usage').then((r) => { if (r) { S.ctx = r; if (S === current) { updateChrome(); renderActivity(); } } });
+  if (S.chromeAfterTurn && !S.sentQueue.length) restartForChrome(S);
 }
 
 function onExit(S, o) {
   const wasBusy = S.busy;
+  if (S.chromeRestart) { S.live = false; S.warming = true; native('start', { k: S.k, opts: S.launchOpts() }).then((ok) => { if (!ok) { S.warming = false; S.chromeRestart = false; renderBrowser(S); } }); return; }
   S.live = false; S.warming = false; setBusy(S, false);
   for (const q of S.sentQueue) q.el.classList.remove('queued');
   S.sentQueue = [];
@@ -1066,6 +1071,8 @@ function onControlResponse(S, o) {
       if (plan && S.account) { plans[S.account.dir || ''] = plan; store.set('plans', plans); }
       S.live = true;
       for (const pr of r.response.pending_permission_requests || []) onControlRequest(S, pr);
+      S.chromeRestart = false;
+      refreshChrome(S);
     } else if (r.subtype === 'error') {
       S.append(notice('Failed to initialize Claude Code: ' + r.error, 'error'));
     }
@@ -1426,6 +1433,7 @@ async function submit() {
     if (cmd === 'clear' || cmd === 'new') { input.value = ''; S.draft.text = ''; native('newChat', { k: S.k }); return; }
     if (cmd === 'terminal') { input.value = ''; native('terminal', { k: S.k }); return; }
     if (cmd === 'activity') { input.value = ''; toggleActivity(); return; }
+    if (cmd === 'chrome') { input.value = ''; S.draft.text = ''; autosize(); openBrowserMenu(S); return; }
     if (cmd === 'resume') { input.value = ''; toast('Pick any past session in the sidebar to resume it.'); return; }
     if (cmd === 'exit' || cmd === 'quit') { input.value = ''; native('end', { k: S.k }); return; }
     if (cmd === 'model' && sm[2]) { S.opts.model = sm[2].trim(); }
@@ -1551,9 +1559,10 @@ function openMenu(anchor, items, dir, alignRight) {
     if (it.head) return h('div.m-head', { text: it.head });
     if (it.seg) return h('div.seg', null, it.seg.map((v) => h('button' + (it.value === v ? '.on' : ''), { text: v, onclick: () => { it.action(v); closeMenu(); } })));
     if (it.note) return h('div.m-note', { text: it.note });
+    if (it.status) return h('div.m-status', null, h('span.sd' + (it.status.cls ? '.' + it.status.cls : '')), h('span', null, it.status.text, it.status.soft ? h('span.soft', { text: ' · ' + it.status.soft }) : null));
     return h('div.m-item', { onclick: () => { closeMenu(); it.action(); }, role: 'menuitem' }, h('span.check', { text: it.checked ? '✓' : '' }),
       it.disc ? h('span.acct-disc.s' + it.disc.slot, { text: it.disc.initial }) : null,
-      h('div', null, h('div.m-label', { text: it.label }), it.desc ? h('div.m-desc', { text: it.desc }) : null),
+      h('div', null, h('div.m-label', { text: it.label }), it.desc ? h('div.m-desc' + (it.warn ? '.wait' : ''), { text: it.desc }) : null),
       it.right ? h('span.m-right' + (it.go ? '.go' : ''), { text: it.right }) : null);
   }));
   menu.hidden = false;
@@ -1564,7 +1573,118 @@ function openMenu(anchor, items, dir, alignRight) {
   setTimeout(() => document.addEventListener('mousedown', menuAway, { once: true }), 0);
 }
 function menuAway(e) { if (!e.target.closest('#menu')) closeMenu(); else document.addEventListener('mousedown', menuAway, { once: true }); }
-function closeMenu() { $('#menu').hidden = true; modelMenu = null; }
+function closeMenu() { $('#menu').hidden = true; modelMenu = null; browserMenu = null; }
+
+// ---- Claude in Chrome: per-chat on/off (restarts that chat's claude), the account's default, reconnect
+const CHROME = 'claude-in-chrome';
+const CHROME_URLS = { permissions: 'https://clau.de/chrome/permissions', install: 'https://claude.ai/chrome' };
+
+// What this chat's Chrome does now (status) and should do (on: the chat's choice, else the account default).
+function chromeState(S) {
+  const info = S.chromeInfo || {};
+  const live = S.live && !S.chromeRestart;
+  const actual = live && S.chromeStatus ? S.chromeStatus : null;    // connected | pending | failed | off
+  const on = S.opts.chrome ?? (actual ? actual !== 'off' : !!info.enabledByDefault);
+  const status = S.chromeRestart ? (on ? 'pending' : 'off') : actual || (on ? (S.live ? 'pending' : 'ready') : 'off');
+  const noext = info.installed === false && on && status !== 'connected';
+  return { status, on, info, noext, waiting: !!S.chromeAfterTurn };
+}
+
+async function refreshChrome(S, polls = 0) {
+  const info = await native('chromeInfo', { k: S.k });
+  if (info) S.chromeInfo = info;
+  if (S.live && !S.chromeRestart) {
+    const r = await S.request('mcp_status');
+    const m = (r?.mcpServers || []).find((x) => x.name === CHROME);
+    S.chromeStatus = !m ? 'off' : m.status === 'connected' ? 'connected' : m.status === 'pending' ? 'pending' : m.status === 'disabled' ? 'off' : 'failed';
+    if (S.chromeStatus === 'pending' && polls < 10) setTimeout(() => refreshChrome(S, polls + 1), 1000);
+  }
+  renderBrowser(S);
+}
+
+function setChromeForChat(S, on) {
+  S.opts.chrome = on;
+  if (!S.live || S.chromeRestart) { renderBrowser(S); return; }       // applies when Claude starts
+  const active = S.chromeStatus && S.chromeStatus !== 'off';
+  if (active === on) { S.chromeAfterTurn = false; renderBrowser(S); return; }
+  if (S.busy || S.sentQueue.length) { S.chromeAfterTurn = true; renderBrowser(S); return; }
+  restartForChrome(S);
+}
+
+function restartForChrome(S) {
+  S.chromeAfterTurn = false;
+  S.chromeRestart = true; S.chromeStatus = null;
+  renderBrowser(S);
+  native('end', { k: S.k });                                         // onExit starts it again
+}
+
+async function setChromeDefault(S, on) {
+  const ok = await native('setChromeDefault', { k: S.k, on });
+  if (!ok) toast("Couldn't save the Chrome setting");
+  await refreshChrome(S);
+}
+
+async function reconnectChrome(S) {
+  if (!S.live) return;
+  S.chromeStatus = 'pending'; renderBrowser(S);
+  await S.request('mcp_reconnect', { serverName: CHROME });
+  refreshChrome(S);
+}
+
+function openChromeURL(kind) { native('openURL', { url: CHROME_URLS[kind] }); }
+
+function chromeLabel(st) {
+  const b = st.info.browser;
+  if (st.noext) return { cls: 'noext', text: 'Extension not found' };
+  switch (st.status) {
+    case 'connected': return { cls: '', text: 'Connected', soft: b };
+    case 'pending': return { cls: 'pending', text: 'Connecting…' };
+    case 'failed': return { cls: 'failed', text: "Couldn't connect", soft: b };
+    case 'ready': return { cls: 'off', text: 'On when Claude starts', soft: b };
+    default: return { cls: 'off', text: 'Off in this chat', soft: b ? `${b} ready` : '' };
+  }
+}
+
+function renderBrowser(S) {
+  if (S !== current) return;
+  renderBrowserChip(S);
+  if (browserMenu === S && !$('#menu').hidden) openBrowserMenu(S);
+}
+
+function renderBrowserChip(S) {
+  const chip = $('#cr'), st = chromeState(S);
+  chip.hidden = !(st.on || st.waiting || st.status === 'connected' || st.status === 'failed');
+  if (chip.hidden) return;
+  const cls = st.noext ? 'noext' : st.status === 'failed' ? 'failed' : st.status === 'pending' ? 'pending' : '';
+  chip.className = 'cr' + (cls ? ' ' + cls : '') + (st.waiting ? ' queued' : '');
+  const l = chromeLabel(st);
+  chip.title = 'Claude in Chrome · ' + l.text + (l.soft ? ' · ' + l.soft : '');
+}
+
+function openBrowserMenu(S) {
+  if (!S) return;
+  const st = chromeState(S);
+  const items = [{ head: 'Claude in Chrome' }, { status: chromeLabel(st) }];
+  if (st.status === 'failed' && S.live && !st.noext) items.push({ label: 'Reconnect', desc: 'Try the Chrome extension again', right: '↻', action: () => reconnectChrome(S) });
+  if (st.noext) items.push({ label: 'Install Chrome extension', desc: 'Opens claude.ai/chrome in your browser', right: '↗', action: () => openChromeURL('install') });
+  const verb = st.on ? 'on' : 'off';
+  items.push({
+    label: 'Use in this chat', checked: st.on,
+    desc: st.waiting ? `Turns ${verb} when Claude finishes this turn` : S.live ? 'Restarts Claude for a moment; the chat stays' : 'Applies when Claude starts',
+    warn: st.waiting, right: st.waiting ? 'Undo' : '',
+    action: () => setChromeForChat(S, !st.on),
+  });
+  items.push({ label: 'Manage site permissions', right: '↗', action: () => openChromeURL('permissions') });
+  items.push({ sep: true }, {
+    label: 'Use by default in new chats', checked: !!st.info.enabledByDefault,
+    desc: `${S.account?.name || 'this'} account · here and in the terminal`,
+    action: () => setChromeDefault(S, !st.info.enabledByDefault),
+  });
+  const chip = $('#cr');
+  openMenu(chip.hidden ? $('#ring') : chip, items, 'up', true);
+  browserMenu = S;
+}
+$('#cr').addEventListener('click', () => { if (browserMenu === current && !$('#menu').hidden) closeMenu(); else openBrowserMenu(current); });
 
 // ---- popover: slash commands & @files
 const pop = { open: false, items: [], sel: 0, kind: '', start: 0 };
@@ -1580,7 +1700,8 @@ async function updatePopover() {
     const cmds = [...APP_COMMANDS, ...(S.init?.commands || [])];
     const seen = new Set();
     const items = cmds.filter((c) => { if (seen.has(c.name)) return false; seen.add(c.name); return !c.name.startsWith('__'); })
-      .map((c) => ({ c, score: rank(c.name.toLowerCase(), q) }))
+      // Like the terminal: match names first, then descriptions (so /chr also finds browser skills).
+      .map((c) => ({ c, score: rank(c.name.toLowerCase(), q) || (q.length > 1 && (c.description || '').toLowerCase().includes(q) ? 10 : 0) }))
       .filter((x) => x.score > 0).sort((a, b) => b.score - a.score).slice(0, 60)
       .map(({ c }) => ({ label: '/' + c.name, hint: c.argumentHint || '', desc: (c.description || '').replace(/\s*\((user|project|plugin[^)]*)\)\s*$/, ''), insert: '/' + c.name + ' ' }));
     return showPop('slash', 0, items, S.init ? 'No matching commands' : 'Starting Claude Code…');
@@ -1649,6 +1770,7 @@ function updateChrome() {
   updatePlaceholder();
 
   renderRing(S);
+  renderBrowserChip(S);
   renderAccountChip(S);
   renderHeadsUp(S);
   if (glance.open) renderGlance(S);
