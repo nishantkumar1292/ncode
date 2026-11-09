@@ -170,8 +170,20 @@ enum ProjectStore {
 
     private static func computeTitle(_ url: URL) -> String {
         if let t = explicitTitle(file: url) { return t }
-        guard let data = try? Data(contentsOf: url, options: .alwaysMapped) else { return "Untitled" }
-        // First real user prompt.
+        // ncode runs `claude -p`, where the CLI writes no AI title; ncode keeps its own (see AITitles).
+        if let t = AITitles.get(url.deletingPathExtension().lastPathComponent) { return t }
+        guard let text = firstPrompt(file: url) else { return "Untitled" }
+        return String(text.prefix(80)).replacingOccurrences(of: "\n", with: " ")
+    }
+
+    /// Drop cached titles, e.g. after Claude names a chat: the transcript itself didn't change.
+    static func clearTitleCache() {
+        cacheLock.lock(); titleCache.removeAll(); cacheLock.unlock()
+    }
+
+    /// The chat's first real user prompt, in full.
+    static func firstPrompt(file url: URL) -> String? {
+        guard let data = try? Data(contentsOf: url, options: .alwaysMapped) else { return nil }
         var searchStart = data.startIndex
         let needle = Data(#""type":"user""#.utf8)
         var tries = 0
@@ -190,9 +202,9 @@ enum ProjectStore {
             }
             text = text.trimmingCharacters(in: .whitespacesAndNewlines)
             if text.isEmpty || text.hasPrefix("<") { continue }
-            return String(text.prefix(80)).replacingOccurrences(of: "\n", with: " ")
+            return text
         }
-        return "Untitled"
+        return nil
     }
 
     private static func jsonString(_ data: Data, from start: Data.Index) -> String? {

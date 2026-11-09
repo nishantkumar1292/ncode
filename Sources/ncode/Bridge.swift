@@ -112,6 +112,7 @@ final class Bridge: NSObject, WKScriptMessageHandlerWithReply, WKNavigationDeleg
             m.afterEnv {
                 guard m.ensureStarted(s, options: opts) else { replyHandler(false, nil); return }
                 s.write(line)
+                m.userSent(s, line: line)
                 replyHandler(true, nil)
             }
 

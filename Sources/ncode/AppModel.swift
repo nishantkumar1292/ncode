@@ -346,10 +346,11 @@ final class AppModel: ObservableObject {
         UNUserNotificationCenter.current().add(req)
     }
 
-    /// Pick up the title Claude generates for the session (or one set with /rename).
+    /// After a reply: pick up a title set with /rename, or the one Claude wrote for the chat.
+    /// If there is neither yet (an older chat), ask Claude for one from the chat's first prompt.
     private func refreshTitle(_ s: Session) {
-        let file = accountFor(dir: s.configDir).projectsDir.appendingPathComponent(ProjectStore.encode(s.cwd)).appendingPathComponent("\(s.sessionId).jsonl")
-        let candidates = [file] + (project(for: s.cwd)?.transcriptDirs.map { $0.appendingPathComponent("\(s.sessionId).jsonl") } ?? [])
+        let id = s.sessionId
+        let candidates = transcriptCandidates(s)
         DispatchQueue.global().asyncAfter(deadline: .now() + 2.0) {
             for f in candidates {
                 if let t = ProjectStore.explicitTitle(file: f) {
@@ -357,7 +358,46 @@ final class AppModel: ObservableObject {
                     return
                 }
             }
+            if let t = AITitles.get(id) {
+                DispatchQueue.main.async { if s.title != t { s.title = t } }
+                return
+            }
+            guard let prompt = candidates.lazy.compactMap({ ProjectStore.firstPrompt(file: $0) }).first else { return }
+            DispatchQueue.main.async { self.nameChat(s, id: id, from: prompt) }
         }
+    }
+
+    /// The renderer sent a message. On a brand-new chat that's the first prompt: name the chat
+    /// now, instead of waiting for the first reply to finish.
+    func userSent(_ s: Session, line: String) {
+        guard !s.hasTranscript, AITitles.get(s.sessionId) == nil, let text = AITitles.promptText(line: line) else { return }
+        nameChat(s, id: s.sessionId, from: text)
+    }
+
+    /// Ask Claude for a 3-6 word title (the CLI only writes one in interactive mode, see AITitles).
+    private func nameChat(_ s: Session, id: String, from prompt: String) {
+        let text = prompt.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard let path = claudePath, !text.isEmpty, !text.hasPrefix("/") else { return }
+        let candidates = transcriptCandidates(s)
+        AITitles.generate(id: id, prompt: text, claudePath: path, env: env, configDir: s.configDir) { [weak self] title in
+            ProjectStore.clearTitleCache()
+            self?.refreshProjects(debounce: 0.3)
+            // A /rename made in the meantime wins (the CLI saved it in the transcript).
+            DispatchQueue.global().async {
+                let renamed = candidates.lazy.compactMap { ProjectStore.explicitTitle(file: $0) }.first
+                DispatchQueue.main.async {
+                    guard s.sessionId == id else { return }
+                    let t = renamed ?? title
+                    if s.title != t { s.title = t }
+                }
+            }
+        }
+    }
+
+    private func transcriptCandidates(_ s: Session) -> [URL] {
+        let name = "\(s.sessionId).jsonl"
+        let file = accountFor(dir: s.configDir).projectsDir.appendingPathComponent(ProjectStore.encode(s.cwd)).appendingPathComponent(name)
+        return [file] + (project(for: s.cwd)?.transcriptDirs.map { $0.appendingPathComponent(name) } ?? [])
     }
 
     func updateBadge() {

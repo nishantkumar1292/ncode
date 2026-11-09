@@ -13,7 +13,7 @@ A tiny native Mac app for [Claude Code](https://docs.claude.com/en/docs/claude-c
 
 | Area | What you get |
 |---|---|
-| Projects | Sidebar of the folders you add (⌘O), each with the chats you started there in ncode, by title. Live status dots for running, waiting for approval, and background tasks. |
+| Projects | Sidebar of the folders you add (⌘O), each with the chats you started there in ncode. Claude names each new chat in a few words a few seconds after your first message (a small Haiku call on the chat's account, no tools, no saved transcript); `/rename` still wins. Live status dots for running, waiting for approval, and background tasks. |
 | Chat | Streaming markdown with GFM tables, task lists, syntax-highlighted code with copy, KaTeX math, Mermaid diagrams, images (paste, drag-drop or attach), summarized thinking. |
 | Tools | Every tool call as a compact row: Bash with output, Read, Write, Edit diffs with line numbers, Grep/Glob, web, MCP tools, todo lists. |
 | Subagents | Each subagent gets a live card with its type, task, current step, tool and token counts, duration, a Stop button, and its full nested transcript. |
@@ -34,6 +34,8 @@ git clone https://github.com/nishantkumar1292/ncode.git
 cd ncode
 ./build.sh --install     # builds build/ncode.app and copies it to /Applications
 ```
+
+`build.sh` signs the app with your Developer ID or Apple Development certificate when the keychain has one, so macOS remembers folder access across rebuilds; otherwise it signs ad-hoc and macOS may ask again after each rebuild. Set `NCODE_SIGN_IDENTITY` to pick a certificate (or `-` for ad-hoc).
 
 `--install` also puts a small `ncode` command on your PATH, so you can open a folder from the terminal:
 
