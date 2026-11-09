@@ -15,9 +15,29 @@ cp -R Resources/web "$APP/Contents/Resources/web"
 cp Info.plist "$APP/Contents/Info.plist"
 [[ -f Resources/AppIcon.icns ]] || swift scripts/make_icon.swift Resources/AppIcon.icns >/dev/null
 cp Resources/AppIcon.icns "$APP/Contents/Resources/AppIcon.icns"
-codesign --force --deep --sign - "$APP" >/dev/null 2>&1
+# Sign with a real certificate when one is available. An ad-hoc signature ("-") ties the app's
+# identity to its binary hash, so macOS forgets privacy grants (Documents, Desktop, ...) on every
+# rebuild. A certificate gives a stable identity, so a grant survives rebuilds.
+# Override with NCODE_SIGN_IDENTITY (a certificate name or SHA-1 hash, or "-" for ad-hoc).
+SIGN_ID=${NCODE_SIGN_IDENTITY:-}
+SIGN_KIND="identity from NCODE_SIGN_IDENTITY"
+if [[ -z "$SIGN_ID" ]]; then
+  IDS=$(security find-identity -v -p codesigning 2>/dev/null || true)
+  for kind in "Developer ID Application" "Apple Development"; do
+    SIGN_ID=$(print -r -- "$IDS" | grep -m1 "\"$kind: " | awk '{print $2}' || true)
+    [[ -n "$SIGN_ID" ]] && { SIGN_KIND=$kind; break; }
+  done
+fi
+[[ -n "$SIGN_ID" ]] || { SIGN_ID=-; SIGN_KIND="ad-hoc"; }
+[[ "$SIGN_ID" == "-" ]] && SIGN_KIND="ad-hoc (macOS will re-ask for folder access after each rebuild)"
+if ! codesign --force --deep --sign "$SIGN_ID" "$APP" >/dev/null 2>&1; then
+  [[ "$SIGN_ID" == "-" ]] && { echo "codesign failed"; exit 1; }
+  echo "Signing with the $SIGN_KIND certificate failed; falling back to ad-hoc"
+  codesign --force --deep --sign - "$APP" >/dev/null 2>&1
+  SIGN_KIND="ad-hoc (macOS will re-ask for folder access after each rebuild)"
+fi
 
-echo "Built $APP ($(du -sh "$APP" | cut -f1))"
+echo "Built $APP ($(du -sh "$APP" | cut -f1)), signed: $SIGN_KIND"
 
 for arg in "$@"; do
   case $arg in
