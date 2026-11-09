@@ -91,6 +91,7 @@ flowchart LR
 - Swift is a thin pipe: it manages processes, reads transcripts for the sidebar, and serves files. The web renderer (`Resources/web`) owns the protocol and the UI.
 - Permission prompts come in as `can_use_tool` control requests and are answered from the inline cards.
 - The app loads your login shell environment once, so `claude` and every command it runs see the same `PATH` as your terminal.
+- Headless `claude` leaves a few terminal features off unless asked. ncode turns them back on: Claude in Chrome (`--chrome`, following your account's default) and the Artifact tools for publishing pages to claude.ai (`CLAUDE_CODE_ARTIFACT=1`; set it to `0` in your shell to keep them off).
 
 ## Project layout
 

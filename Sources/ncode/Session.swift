@@ -73,6 +73,9 @@ final class Session: ObservableObject, Identifiable {
         var env = env
         env.removeValue(forKey: "CLAUDECODE")
         if let configDir { env["CLAUDE_CONFIG_DIR"] = configDir }
+        // `claude -p` leaves the Artifact tools (publish and update pages on claude.ai) off unless
+        // asked for; the terminal has them on. Ask for them, unless the user's shell already decides.
+        if env["CLAUDE_CODE_ARTIFACT"] == nil { env["CLAUDE_CODE_ARTIFACT"] = "1" }
         // `claude -p` ignores the "Chrome enabled by default" setting (/chrome in the terminal), so pass
         // it on, or the Claude in Chrome tools never load. A chat can override it (`chrome` option).
         let chrome = options["chrome"] as? Bool ?? ChromeSettings.enabledByDefault(configDir: env["CLAUDE_CONFIG_DIR"])
