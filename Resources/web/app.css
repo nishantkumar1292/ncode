@@ -444,6 +444,16 @@ kbd { font: 11px var(--font-mono); padding: 1px 5px; border: 1px solid var(--bor
 .menu .seg { display: flex; gap: 4px; padding: 4px 8px 6px; }
 .menu .seg button { flex: 1; border: 1px solid var(--border); background: transparent; border-radius: 7px; font-size: 11.5px; padding: 3px 0; cursor: pointer; }
 .menu .seg button.on { background: var(--accent-soft); border-color: var(--accent); color: var(--accent); }
+.menu .seg button:not(.on):hover { background: var(--surface-3); }
+/* Effort: the level in use is filled; a dot marks the default from settings (dashed when something else is picked). */
+.menu .seg.has-dflt { padding-bottom: 12px; }
+.menu .seg button.dflt { position: relative; }
+.menu .seg button.dflt::after { content: ""; position: absolute; left: 50%; bottom: -8px; width: 4px; height: 4px; margin-left: -2px; border-radius: 50%; background: var(--text-3); }
+.menu .seg button.dflt:not(.on) { border-style: dashed; border-color: var(--border-strong); }
+.menu .seg button.on.dflt::after { background: var(--accent); }
+.menu .seg.checking button { opacity: .45; }
+.chip .eff { color: var(--text); }
+.chip .eff.dflt { color: var(--text-3); }
 .toasts { position: fixed; top: 12px; left: 50%; transform: translateX(-50%); z-index: 60; display: flex; flex-direction: column; gap: 6px; align-items: center; }
 .toast { background: var(--text); color: var(--bg); padding: 7px 14px; border-radius: 10px; font-size: 12.5px; box-shadow: var(--shadow); max-width: 520px; }
 .lightbox { position: fixed; inset: 0; background: rgba(0,0,0,.75); display: grid; place-items: center; z-index: 70; cursor: zoom-out; }
